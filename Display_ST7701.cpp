@@ -295,8 +295,8 @@ void st7701_init() {
   st7701_write_data(0x00);
   st7701_write_data(0x00);
   st7701_write_data(0x00);
-  st7701_write_command(0x36);
-  st7701_write_data(0x00);
+  st7701_write_command(0x36);  // MADCTL - Memory Access Control
+  st7701_write_data(0x00);     // 0x00 = no rotation (default)
   st7701_write_command(0x3A);
   st7701_write_data(0x66);
   st7701_write_command(0x29);

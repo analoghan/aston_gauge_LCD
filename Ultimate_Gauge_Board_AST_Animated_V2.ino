@@ -387,7 +387,7 @@ void setup(void) {
 
 void loop(void) {
   static unsigned long last_lvgl_time = 0;
-  const unsigned long LVGL_INTERVAL_MS = 200; // Run LVGL at 5Hz
+  const unsigned long LVGL_INTERVAL_MS = 16; // Run LVGL at ~30Hz
   
   last_loop_time = millis();
   
