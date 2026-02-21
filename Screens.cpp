@@ -11,10 +11,10 @@ LV_IMG_DECLARE(jake);
 lv_obj_t *main_scr = NULL;
 lv_obj_t *boot_scr1 = NULL;
 
-// Reusable UI elements - just two labels that we'll update
-lv_obj_t *left_label_title = NULL;
+// Test labels - simulating left and right titles
+lv_obj_t *test_label_left = NULL;
+lv_obj_t *test_label_right = NULL;
 lv_obj_t *left_label_value = NULL;
-lv_obj_t *right_label_title = NULL;
 lv_obj_t *right_label_value = NULL;
 
 // Reusable style objects
@@ -105,22 +105,22 @@ void main_scr_init(void) {
 
   create_gauge_containers(main_scr);
 
-  // Left side title and value
-  left_label_title = lv_label_create(main_scr);
-  lv_label_set_text_static(left_label_title, "Coolant Temp");
-  lv_obj_set_pos(left_label_title, 850, 100);
-  lv_obj_add_style(left_label_title, &style_label_title, 0);
+  // Two test labels - simulating left and right titles
+  test_label_left = lv_label_create(main_scr);
+  lv_label_set_text(test_label_left, "Coolant Temp");
+  lv_obj_set_pos(test_label_left, 850, 100);
+  lv_obj_add_style(test_label_left, &style_label_title, 0);
 
+  test_label_right = lv_label_create(main_scr);
+  lv_label_set_text(test_label_right, "Oil Pressure");
+  lv_obj_set_pos(test_label_right, 850, 706);
+  lv_obj_add_style(test_label_right, &style_label_title, 0);
+
+  // Value labels
   left_label_value = lv_label_create(main_scr);
   lv_label_set_text_static(left_label_value, "Off");
   lv_obj_set_pos(left_label_value, 770, 158);
   lv_obj_add_style(left_label_value, &style_label_value, 0);
-
-  // Right side title and value
-  right_label_title = lv_label_create(main_scr);
-  lv_label_set_text_static(right_label_title, "Oil Pressure");
-  lv_obj_set_pos(right_label_title, 850, 706);
-  lv_obj_add_style(right_label_title, &style_label_title, 0);
 
   right_label_value = lv_label_create(main_scr);
   lv_label_set_text_static(right_label_value, "Off");
@@ -128,30 +128,26 @@ void main_scr_init(void) {
   lv_obj_add_style(right_label_value, &style_label_value, 0);
 }
 
-// Update screen labels based on current mode
+// Test function - cycle through 4 modes with ABBREVIATED text
 void update_screen_labels(uint8_t mode) {
   current_screen_mode = mode;
   
   switch (mode) {
-    case 0: // Engine vitals
-      lv_label_set_text_static(left_label_title, "Coolant Temp");
-      lv_obj_set_pos(left_label_title, 850, 100);
-      lv_label_set_text_static(right_label_title, "Oil Pressure");
+    case 0:
+      lv_label_set_text(test_label_left, "Coolant");
+      lv_label_set_text(test_label_right, "Oil Pres");
       break;
-    case 1: // AFR
-      lv_label_set_text_static(left_label_title, "Left Bank AFR");
-      lv_obj_set_pos(left_label_title, 850, 100);
-      lv_label_set_text_static(right_label_title, "Right Bank AFR");
+    case 1:
+      lv_label_set_text(test_label_left, "L AFR");
+      lv_label_set_text(test_label_right, "R AFR");
       break;
-    case 2: // Pressures
-      lv_label_set_text_static(left_label_title, "MAP Pressure");
-      lv_obj_set_pos(left_label_title, 850, 100);
-      lv_label_set_text_static(right_label_title, "Coolant Pressure");
+    case 2:
+      lv_label_set_text(test_label_left, "MAP");
+      lv_label_set_text(test_label_right, "Coolant P");
       break;
-    case 3: // Fuel
-      lv_label_set_text_static(left_label_title, "Low Side Fuel Pressure");
-      lv_obj_set_pos(left_label_title, 850, 36); // Adjust for longer text
-      lv_label_set_text_static(right_label_title, "DI Fuel Pressure");
+    case 3:
+      lv_label_set_text(test_label_left, "LS Fuel");
+      lv_label_set_text(test_label_right, "DI Fuel");
       break;
   }
 }
@@ -163,6 +159,10 @@ lv_obj_t* get_left_value_label(void) {
 
 lv_obj_t* get_right_value_label(void) {
   return right_label_value;
+}
+
+lv_obj_t* get_test_label(void) {
+  return test_label_left;
 }
 
 uint8_t get_current_screen_mode(void) {

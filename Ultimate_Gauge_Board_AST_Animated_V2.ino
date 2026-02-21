@@ -280,24 +280,25 @@ void update_display_from_can_data(void) {
   
   unsigned long now = millis();
   
-  // Check for screen change request
-  bool screen_change = false;
-  portENTER_CRITICAL(&display_data_mutex);
-  if (display_data.screen_change_requested) {
-    display_data.screen_change_requested = false;
-    screen_change = true;
-  }
-  portEXIT_CRITICAL(&display_data_mutex);
-  
-  if (screen_change) {
-    uint8_t new_mode = (get_current_screen_mode() + 1) % 4;
-    update_screen_labels(new_mode);
-    Serial.printf("Switched to mode %d\n", new_mode);
-  }
-  
   // Rate limit data updates
   if (now - last_update_time < UPDATE_INTERVAL_MS) {
     return;
+  }
+  
+  // Check for mode change request
+  bool mode_change_requested = false;
+  portENTER_CRITICAL(&display_data_mutex);
+  if (display_data.screen_change_requested) {
+    display_data.screen_change_requested = false;
+    mode_change_requested = true;
+  }
+  portEXIT_CRITICAL(&display_data_mutex);
+  
+  // Cycle through modes - EXACTLY like the real implementation
+  if (mode_change_requested) {
+    uint8_t new_mode = (get_current_screen_mode() + 1) % 4;
+    update_screen_labels(new_mode);
+    Serial.printf("Changed to mode %d\n", new_mode);
   }
   
   // Get data based on current mode
@@ -375,8 +376,19 @@ void setup(void) {
 }
 
 void loop(void) {
+  static unsigned long last_lvgl_time = 0;
+  const unsigned long LVGL_INTERVAL_MS = 200; // Run LVGL at 5Hz
+  
   last_loop_time = millis();
-  lv_timer_handler();
+  
+  // Run LVGL timer handler
+  if (millis() - last_lvgl_time >= LVGL_INTERVAL_MS) {
+    lv_timer_handler();
+    last_lvgl_time = millis();
+  }
+  
+  // Update data values - includes test label toggle
   update_display_from_can_data();
+  
   vTaskDelay(pdMS_TO_TICKS(16));
 }

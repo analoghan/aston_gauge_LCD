@@ -15,6 +15,7 @@ void init_styles(void);
 void update_screen_labels(uint8_t mode);
 lv_obj_t* get_left_value_label(void);
 lv_obj_t* get_right_value_label(void);
+lv_obj_t* get_test_label(void);
 uint8_t get_current_screen_mode(void);
 
 // Callback functions
