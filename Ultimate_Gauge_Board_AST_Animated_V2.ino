@@ -190,6 +190,16 @@ void update_display_values(uint8_t mode, uint8_t left_val, uint8_t right_val) {
   static int last_right = -999;
   static uint8_t last_left_r = 255, last_left_g = 255, last_left_b = 255;
   static uint8_t last_right_r = 255, last_right_g = 255, last_right_b = 255;
+  static uint8_t last_mode = 255;
+  
+  // Reset cached values when mode changes
+  if (mode != last_mode) {
+    last_left = -999;
+    last_right = -999;
+    last_left_r = 255; last_left_g = 255; last_left_b = 255;
+    last_right_r = 255; last_right_g = 255; last_right_b = 255;
+    last_mode = mode;
+  }
   
   lv_obj_t *left_label = get_left_value_label();
   lv_obj_t *right_label = get_right_value_label();
@@ -243,8 +253,8 @@ void update_display_values(uint8_t mode, uint8_t left_val, uint8_t right_val) {
   
   // Update left value
   if (left_processed != last_left) {
-    char text[4];
-    itoa(left_processed, text, 10);
+    char text[6];
+    sprintf(text, "%d", left_processed);
     lv_label_set_text(left_label, text);
     last_left = left_processed;
   }
@@ -259,8 +269,8 @@ void update_display_values(uint8_t mode, uint8_t left_val, uint8_t right_val) {
   
   // Update right value
   if (right_processed != last_right) {
-    char text[4];
-    itoa(right_processed, text, 10);
+    char text[6];
+    sprintf(text, "%d", right_processed);
     lv_label_set_text(right_label, text);
     last_right = right_processed;
   }

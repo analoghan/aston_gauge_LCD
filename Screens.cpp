@@ -4,8 +4,6 @@
 #include "images/jake.h"
 
 LV_IMG_DECLARE(AstonLogo);
-LV_IMG_DECLARE(MotecLogo);
-LV_IMG_DECLARE(jake);
 
 // Single main screen
 lv_obj_t *main_scr = NULL;
@@ -16,6 +14,10 @@ lv_obj_t *test_label_left = NULL;
 lv_obj_t *test_label_right = NULL;
 lv_obj_t *left_label_value = NULL;
 lv_obj_t *right_label_value = NULL;
+lv_obj_t *odometer_label = NULL;
+lv_obj_t *odometer_value = NULL;
+lv_obj_t *trip_meter_label = NULL;
+lv_obj_t *trip_meter_value = NULL;
 
 // Reusable style objects
 static lv_style_t style_label_title;
@@ -107,25 +109,47 @@ void main_scr_init(void) {
 
   // Two test labels - simulating left and right titles
   test_label_left = lv_label_create(main_scr);
-  lv_label_set_text(test_label_left, "Coolant Temp");
-  lv_obj_set_pos(test_label_left, 850, 100);
+  lv_label_set_text(test_label_left, "ECT °F");
+  lv_obj_set_pos(test_label_left, 850, 60);
   lv_obj_add_style(test_label_left, &style_label_title, 0);
 
   test_label_right = lv_label_create(main_scr);
-  lv_label_set_text(test_label_right, "Oil Pressure");
-  lv_obj_set_pos(test_label_right, 850, 706);
+  lv_label_set_text(test_label_right, "Oil PSI");
+  lv_obj_set_pos(test_label_right, 850, 660);
   lv_obj_add_style(test_label_right, &style_label_title, 0);
 
   // Value labels
   left_label_value = lv_label_create(main_scr);
-  lv_label_set_text_static(left_label_value, "Off");
+  lv_label_set_text_static(left_label_value, "  0");
   lv_obj_set_pos(left_label_value, 770, 158);
   lv_obj_add_style(left_label_value, &style_label_value, 0);
 
   right_label_value = lv_label_create(main_scr);
-  lv_label_set_text_static(right_label_value, "Off");
+  lv_label_set_text_static(right_label_value, "  0");
   lv_obj_set_pos(right_label_value, 770, 750);
   lv_obj_add_style(right_label_value, &style_label_value, 0);
+
+  odometer_label = lv_label_create(main_scr);
+  lv_label_set_text_static(odometer_label, "Miles");
+  lv_obj_set_pos(odometer_label, 680, 60);
+  lv_obj_add_style(odometer_label, &style_label_title, 0);
+
+  odometer_value = lv_label_create(main_scr);
+  lv_label_set_text_static(odometer_value, "58,625");
+  lv_obj_set_pos(odometer_value, 680, 150);
+  lv_obj_add_style(odometer_value, &style_label_title, 0);
+
+/*
+  trip_meter_label = lv_label_create(main_scr);
+  lv_label_set_text_static(trip_meter_label, "Trip");
+  lv_obj_set_pos(trip_meter_label, 680, 660);
+  lv_obj_add_style(trip_meter_label, &style_label_title, 0);  
+
+  trip_meter_value = lv_label_create(main_scr);
+  lv_label_set_text_static(trip_meter_value, "0");
+  lv_obj_set_pos(trip_meter_value, 680, 750);
+  lv_obj_add_style(trip_meter_value, &style_label_title, 0);    
+*/
 }
 
 // Test function - cycle through 4 modes with ABBREVIATED text
@@ -134,8 +158,8 @@ void update_screen_labels(uint8_t mode) {
   
   switch (mode) {
     case 0:
-      lv_label_set_text(test_label_left, "Coolant");
-      lv_label_set_text(test_label_right, "Oil Pres");
+      lv_label_set_text(test_label_left, "ECT °F");
+      lv_label_set_text(test_label_right, "Oil PSI");
       break;
     case 1:
       lv_label_set_text(test_label_left, "L AFR");
@@ -143,13 +167,21 @@ void update_screen_labels(uint8_t mode) {
       break;
     case 2:
       lv_label_set_text(test_label_left, "MAP");
-      lv_label_set_text(test_label_right, "Coolant P");
+      lv_label_set_text(test_label_right, "Water PSI");
       break;
     case 3:
-      lv_label_set_text(test_label_left, "LS Fuel");
-      lv_label_set_text(test_label_right, "DI Fuel");
+      lv_label_set_text(test_label_left, "LS PSI");
+      lv_label_set_text(test_label_right, "DI PSI");
       break;
   }
+  
+  // Reset value labels to 0 when changing modes
+  lv_label_set_text(left_label_value, "  0");
+  lv_label_set_text(right_label_value, "  0");
+  
+  // Reset colors to white
+  lv_obj_set_style_text_color(left_label_value, lv_color_make(255, 255, 255), LV_PART_MAIN);
+  lv_obj_set_style_text_color(right_label_value, lv_color_make(255, 255, 255), LV_PART_MAIN);
 }
 
 // Get pointers to value labels for updating
