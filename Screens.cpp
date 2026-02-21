@@ -7,33 +7,23 @@ LV_IMG_DECLARE(AstonLogo);
 LV_IMG_DECLARE(MotecLogo);
 LV_IMG_DECLARE(jake);
 
-// Screen objects
+// Single main screen
 lv_obj_t *main_scr = NULL;
-lv_obj_t *main_scr2 = NULL;
-lv_obj_t *main_scr3 = NULL;
-lv_obj_t *main_scr4 = NULL;
 lv_obj_t *boot_scr1 = NULL;
 
-// UI element objects - Screen 1
-lv_obj_t *coolant_temp_scr1 = NULL;
-lv_obj_t *oil_press_scr1 = NULL;
-
-// UI element objects - Screen 2
-lv_obj_t *left_afr_scr2 = NULL;
-lv_obj_t *right_afr_scr2 = NULL;
-
-// UI element objects - Screen 3
-lv_obj_t *map_press_scr3 = NULL;
-lv_obj_t *coolant_press_scr3 = NULL;
-
-// UI element objects - Screen 4
-lv_obj_t *ls_fuel_press_scr4 = NULL;
-lv_obj_t *hs_fuel_press_scr4 = NULL;
+// Reusable UI elements - just two labels that we'll update
+lv_obj_t *left_label_title = NULL;
+lv_obj_t *left_label_value = NULL;
+lv_obj_t *right_label_title = NULL;
+lv_obj_t *right_label_value = NULL;
 
 // Reusable style objects
-static lv_style_t style_label_title;    // For "Coolant Temp", "Oil Pressure" etc
-static lv_style_t style_label_value;    // For the actual values
+static lv_style_t style_label_title;
+static lv_style_t style_label_value;
 static bool styles_initialized = false;
+
+// Current screen mode
+static uint8_t current_screen_mode = 0; // 0=temp/oil, 1=AFR, 2=pressures, 3=fuel
 
 void init_styles(void) {
   if (styles_initialized) return;
@@ -56,7 +46,7 @@ void init_styles(void) {
 void boot_scr1_loaded_cb(lv_event_t *e)
 {
   /* load default screen after 4000ms */
-  lv_screen_load_anim(main_scr, LV_SCR_LOAD_ANIM_FADE_OUT, 200, 4000, true);
+  lv_screen_load_anim(main_scr, LV_SCR_LOAD_ANIM_NONE, 0, 4000, false);
 }
 
 // Helper function to create gauge containers
@@ -108,125 +98,81 @@ void boot_scr1_init(void)
   lv_obj_add_event_cb(boot_scr1, boot_scr1_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 }
 
-// create the elements on main screen 1
+// create the single main screen with reusable labels
 void main_scr_init(void) {
   main_scr = lv_obj_create(NULL);
   lv_obj_set_style_bg_color(main_scr, lv_color_make(0,0,0), 0);
 
   create_gauge_containers(main_scr);
 
-  lv_obj_t *coolant_label = lv_label_create(main_scr);
-  lv_label_set_text_static(coolant_label, "Coolant Temp");
-  lv_obj_set_pos(coolant_label, 850, 100);
-  lv_obj_add_style(coolant_label, &style_label_title, 0);
+  // Left side title and value
+  left_label_title = lv_label_create(main_scr);
+  lv_label_set_text_static(left_label_title, "Coolant Temp");
+  lv_obj_set_pos(left_label_title, 850, 100);
+  lv_obj_add_style(left_label_title, &style_label_title, 0);
 
-  coolant_temp_scr1 = lv_label_create(main_scr);
-  lv_label_set_text_static(coolant_temp_scr1, "Off");
-  lv_obj_set_pos(coolant_temp_scr1, 770, 158);
-  lv_obj_add_style(coolant_temp_scr1, &style_label_value, 0);
+  left_label_value = lv_label_create(main_scr);
+  lv_label_set_text_static(left_label_value, "Off");
+  lv_obj_set_pos(left_label_value, 770, 158);
+  lv_obj_add_style(left_label_value, &style_label_value, 0);
 
-  lv_obj_t *oil_label = lv_label_create(main_scr);
-  lv_label_set_text_static(oil_label, "Oil Pressure");
-  lv_obj_set_pos(oil_label, 850, 706);
-  lv_obj_add_style(oil_label, &style_label_title, 0);
+  // Right side title and value
+  right_label_title = lv_label_create(main_scr);
+  lv_label_set_text_static(right_label_title, "Oil Pressure");
+  lv_obj_set_pos(right_label_title, 850, 706);
+  lv_obj_add_style(right_label_title, &style_label_title, 0);
 
-  oil_press_scr1 = lv_label_create(main_scr);
-  lv_label_set_text_static(oil_press_scr1, "Off");
-  lv_obj_set_pos(oil_press_scr1, 770, 750);
-  lv_obj_add_style(oil_press_scr1, &style_label_value, 0);
+  right_label_value = lv_label_create(main_scr);
+  lv_label_set_text_static(right_label_value, "Off");
+  lv_obj_set_pos(right_label_value, 770, 750);
+  lv_obj_add_style(right_label_value, &style_label_value, 0);
 }
 
-// create the elements on main screen 2
-void main_scr2_init(void) {
-  main_scr2 = lv_obj_create(NULL);
-  lv_obj_set_style_bg_color(main_scr2, lv_color_make(0,0,0), 0);
+// Update screen labels based on current mode
+void update_screen_labels(uint8_t mode) {
+  current_screen_mode = mode;
+  
+  switch (mode) {
+    case 0: // Engine vitals
+      lv_label_set_text_static(left_label_title, "Coolant Temp");
+      lv_obj_set_pos(left_label_title, 850, 100);
+      lv_label_set_text_static(right_label_title, "Oil Pressure");
+      break;
+    case 1: // AFR
+      lv_label_set_text_static(left_label_title, "Left Bank AFR");
+      lv_obj_set_pos(left_label_title, 850, 100);
+      lv_label_set_text_static(right_label_title, "Right Bank AFR");
+      break;
+    case 2: // Pressures
+      lv_label_set_text_static(left_label_title, "MAP Pressure");
+      lv_obj_set_pos(left_label_title, 850, 100);
+      lv_label_set_text_static(right_label_title, "Coolant Pressure");
+      break;
+    case 3: // Fuel
+      lv_label_set_text_static(left_label_title, "Low Side Fuel Pressure");
+      lv_obj_set_pos(left_label_title, 850, 36); // Adjust for longer text
+      lv_label_set_text_static(right_label_title, "DI Fuel Pressure");
+      break;
+  }
+}
 
-  create_gauge_containers(main_scr2);
+// Get pointers to value labels for updating
+lv_obj_t* get_left_value_label(void) {
+  return left_label_value;
+}
 
-  lv_obj_t *afr1_label = lv_label_create(main_scr2);
-  lv_label_set_text_static(afr1_label, "Left Bank AFR");
-  lv_obj_set_pos(afr1_label, 850, 100);
-  lv_obj_add_style(afr1_label, &style_label_title, 0);
+lv_obj_t* get_right_value_label(void) {
+  return right_label_value;
+}
 
-  left_afr_scr2 = lv_label_create(main_scr2);
-  lv_label_set_text_static(left_afr_scr2, "Off");
-  lv_obj_set_pos(left_afr_scr2, 770, 158);
-  lv_obj_add_style(left_afr_scr2, &style_label_value, 0);
-
-  lv_obj_t *afr2_label = lv_label_create(main_scr2);
-  lv_label_set_text_static(afr2_label, "Right Bank AFR");
-  lv_obj_set_pos(afr2_label, 850, 706);
-  lv_obj_add_style(afr2_label, &style_label_title, 0);
-
-  right_afr_scr2 = lv_label_create(main_scr2);
-  lv_label_set_text_static(right_afr_scr2, "Off");
-  lv_obj_set_pos(right_afr_scr2, 770, 750);
-  lv_obj_add_style(right_afr_scr2, &style_label_value, 0);
+uint8_t get_current_screen_mode(void) {
+  return current_screen_mode;
 }
 
 // build the screens
 void screens_init(void) {
   init_styles();  // Initialize reusable styles first
   main_scr_init();
-  main_scr2_init();
-  main_scr3_init();
-  main_scr4_init();
   boot_scr1_init();
   lv_screen_load(boot_scr1);
-}
-
-// create the elements on main screen 3 (placeholder)
-void main_scr3_init(void) {
-  main_scr3 = lv_obj_create(NULL);
-  lv_obj_set_style_bg_color(main_scr3, lv_color_make(0,0,0), 0);
-
-  create_gauge_containers(main_scr3);
-
-  lv_obj_t *map_press_label = lv_label_create(main_scr3);
-  lv_label_set_text_static(map_press_label, "MAP Pressure");
-  lv_obj_set_pos(map_press_label, 850, 100);
-  lv_obj_add_style(map_press_label, &style_label_title, 0);
-
-  lv_obj_t *coolant_press_label = lv_label_create(main_scr3);
-  lv_label_set_text_static(coolant_press_label, "Coolant Pressure");
-  lv_obj_set_pos(coolant_press_label, 850, 706);
-  lv_obj_add_style(coolant_press_label, &style_label_title, 0);
-
-  map_press_scr3 = lv_label_create(main_scr3);
-  lv_label_set_text_static(map_press_scr3, "Off");
-  lv_obj_set_pos(map_press_scr3, 770, 158);
-  lv_obj_add_style(map_press_scr3, &style_label_value, 0);
-
-  coolant_press_scr3 = lv_label_create(main_scr3);
-  lv_label_set_text_static(coolant_press_scr3, "Off");
-  lv_obj_set_pos(coolant_press_scr3, 770, 750);
-  lv_obj_add_style(coolant_press_scr3, &style_label_value, 0);
-}
-
-// create the elements on main screen 4 (placeholder)
-void main_scr4_init(void) {
-  main_scr4 = lv_obj_create(NULL);
-  lv_obj_set_style_bg_color(main_scr4, lv_color_make(0,0,0), 0);
-
-  create_gauge_containers(main_scr4);
-
-  lv_obj_t *ls_fuel_press_label = lv_label_create(main_scr4);
-  lv_label_set_text_static(ls_fuel_press_label, "Low Side Fuel Pressure");
-  lv_obj_set_pos(ls_fuel_press_label, 850, 36);
-  lv_obj_add_style(ls_fuel_press_label, &style_label_title, 0);
-
-  lv_obj_t *hs_fuel_press_label = lv_label_create(main_scr4);
-  lv_label_set_text_static(hs_fuel_press_label, "DI Fuel Pressure");
-  lv_obj_set_pos(hs_fuel_press_label, 850, 706);
-  lv_obj_add_style(hs_fuel_press_label, &style_label_title, 0);
-
-  ls_fuel_press_scr4 = lv_label_create(main_scr4);
-  lv_label_set_text_static(ls_fuel_press_scr4, "Off");
-  lv_obj_set_pos(ls_fuel_press_scr4, 770, 158);
-  lv_obj_add_style(ls_fuel_press_scr4, &style_label_value, 0);
-
-  hs_fuel_press_scr4 = lv_label_create(main_scr4);
-  lv_label_set_text_static(hs_fuel_press_scr4, "Off");
-  lv_obj_set_pos(hs_fuel_press_scr4, 770, 750);
-  lv_obj_add_style(hs_fuel_press_scr4, &style_label_value, 0);
 }
