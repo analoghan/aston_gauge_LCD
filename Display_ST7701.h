@@ -45,7 +45,7 @@
 #define ESP_PANEL_LCD_RGB_TIMING_VBP              (20)
 #define ESP_PANEL_LCD_RGB_TIMING_VFP              (20)
 #define ESP_PANEL_LCD_RGB_FRAME_BUF_NUM           (2)     // 1/2/3
-#define ESP_PANEL_LCD_RGB_BOUNCE_BUF_SIZE         (4800)  // Bounce buffer: 960 * 10
+#define ESP_PANEL_LCD_RGB_BOUNCE_BUF_SIZE         (9600)  // Bounce buffer: 960 * 10 (increased for smoother DMA)
                                                           // To enable the bounce buffer, set it to a non-zero value. Typically set to `ESP_PANEL_LCD_WIDTH * 10`
                                                           // The size of the Bounce Buffer must satisfy `width_of_lcd * height_of_lcd = size_of_buffer * N`,
                                                           // where N is an even number.

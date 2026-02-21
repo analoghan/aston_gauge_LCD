@@ -1,7 +1,5 @@
 #include "Screens.h"
 #include "images/AstonLogo.h"
-#include "images/MotecLogo.h"
-#include "images/jake.h"
 
 LV_IMG_DECLARE(AstonLogo);
 
@@ -16,8 +14,8 @@ lv_obj_t *left_label_value = NULL;
 lv_obj_t *right_label_value = NULL;
 lv_obj_t *odometer_label = NULL;
 lv_obj_t *odometer_value = NULL;
-lv_obj_t *trip_meter_label = NULL;
-lv_obj_t *trip_meter_value = NULL;
+lv_obj_t *trip_label = NULL;
+lv_obj_t *trip_value = NULL;
 
 // Reusable style objects
 static lv_style_t style_label_title;
@@ -35,12 +33,14 @@ void init_styles(void) {
   lv_style_set_text_font(&style_label_title, &lv_font_montserrat_28);
   lv_style_set_text_color(&style_label_title, lv_color_make(255, 255, 255));
   lv_style_set_transform_angle(&style_label_title, 900);
+  lv_style_set_text_opa(&style_label_title, LV_OPA_COVER); // Full opacity for smoother rendering
   
   // Style for value labels (48pt white text, rotated)
   lv_style_init(&style_label_value);
   lv_style_set_text_font(&style_label_value, &lv_font_montserrat_48);
   lv_style_set_text_color(&style_label_value, lv_color_make(255, 255, 255));
   lv_style_set_transform_angle(&style_label_value, 900);
+  lv_style_set_text_opa(&style_label_value, LV_OPA_COVER); // Full opacity for smoother rendering
   
   styles_initialized = true;
 }
@@ -49,6 +49,12 @@ void boot_scr1_loaded_cb(lv_event_t *e)
 {
   /* load default screen after 4000ms */
   lv_screen_load_anim(main_scr, LV_SCR_LOAD_ANIM_NONE, 0, 4000, false);
+}
+
+// Callback when main screen is loaded (after boot screen)
+void main_scr_loaded_cb(lv_event_t *e)
+{
+  // Main screen loaded - restore task will handle mode restoration
 }
 
 // Helper function to create gauge containers (adjusted for 240px width)
@@ -81,19 +87,19 @@ void boot_scr1_init(void)
 
   lv_obj_t *power_label = lv_label_create(boot_scr1);
   lv_label_set_text_static(power_label, "Power");
-  lv_obj_set_pos(power_label, 180, 660);
+  lv_obj_set_pos(power_label, 185, 640);
   lv_obj_add_style(power_label, &style_label_title, 0);
   lv_obj_fade_in(power_label, 1000, 0);
 
   lv_obj_t *beauty_label = lv_label_create(boot_scr1);
   lv_label_set_text_static(beauty_label, "Beauty");
-  lv_obj_set_pos(beauty_label, 130, 720);
+  lv_obj_set_pos(beauty_label, 135, 700);
   lv_obj_add_style(beauty_label, &style_label_title, 0);
   lv_obj_fade_in(beauty_label, 1000, 800);
 
   lv_obj_t *soul_label = lv_label_create(boot_scr1);
-  lv_label_set_text_static(soul_label, "Soul");
-  lv_obj_set_pos(soul_label, 80, 790);
+  lv_label_set_text_static(soul_label, "Soulless");
+  lv_obj_set_pos(soul_label, 85, 755);
   lv_obj_add_style(soul_label, &style_label_title, 0);
   lv_obj_fade_in(soul_label, 1000, 1600);  
 
@@ -112,35 +118,48 @@ void main_scr_init(void) {
 
   // Two test labels - top and bottom titles (adjusted for 240px width)
   test_label_left = lv_label_create(main_scr);
-  lv_label_set_text(test_label_left, "ECT °F");
-  lv_obj_set_pos(test_label_left, 210, 50);
+  lv_label_set_text(test_label_left, " ");
+  lv_obj_set_pos(test_label_left, 210, 30);
   lv_obj_add_style(test_label_left, &style_label_title, 0);
 
   test_label_right = lv_label_create(main_scr);
-  lv_label_set_text(test_label_right, "Oil PSI");
-  lv_obj_set_pos(test_label_right, 210, 632);
+  lv_label_set_text(test_label_right, " ");
+  lv_obj_set_pos(test_label_right, 210, 612);
   lv_obj_add_style(test_label_right, &style_label_title, 0);
 
   // Value labels (adjusted for 240px width)
   left_label_value = lv_label_create(main_scr);
-  lv_label_set_text_static(left_label_value, "  0");
-  lv_obj_set_pos(left_label_value, 140, 130);
+  lv_label_set_text_static(left_label_value, "   0");
+  lv_obj_set_pos(left_label_value, 140, 125);
   lv_obj_add_style(left_label_value, &style_label_value, 0);
 
   right_label_value = lv_label_create(main_scr);
-  lv_label_set_text_static(right_label_value, "  0");
-  lv_obj_set_pos(right_label_value, 140, 720);
+  lv_label_set_text_static(right_label_value, "   0");
+  lv_obj_set_pos(right_label_value, 140, 715);
   lv_obj_add_style(right_label_value, &style_label_value, 0);
 
   odometer_label = lv_label_create(main_scr);
   lv_label_set_text_static(odometer_label, "Miles");
-  lv_obj_set_pos(odometer_label, 40, 200);
+  lv_obj_set_pos(odometer_label, 35, 200);
   lv_obj_add_style(odometer_label, &style_label_title, 0);
 
   odometer_value = lv_label_create(main_scr);
   lv_label_set_text_static(odometer_value, "58,625");
-  lv_obj_set_pos(odometer_value, 40, 90);
+  lv_obj_set_pos(odometer_value, 35, 80);
   lv_obj_add_style(odometer_value, &style_label_title, 0);
+
+  trip_label = lv_label_create(main_scr);
+  lv_label_set_text_static(trip_label, "Trip");
+  lv_obj_set_pos(trip_label, 35, 702);
+  lv_obj_add_style(trip_label, &style_label_title, 0);
+
+  trip_value = lv_label_create(main_scr);
+  lv_label_set_text_static(trip_value, "510");
+  lv_obj_set_pos(trip_value, 35, 782);
+  lv_obj_add_style(trip_value, &style_label_title, 0);
+  
+  // Add callback for when main screen is loaded
+  lv_obj_add_event_cb(main_scr, main_scr_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 }
 
 // Test function - cycle through 4 modes with ABBREVIATED text
@@ -167,8 +186,8 @@ void update_screen_labels(uint8_t mode) {
   }
   
   // Reset value labels to 0 when changing modes
-  lv_label_set_text(left_label_value, "  0");
-  lv_label_set_text(right_label_value, "  0");
+  lv_label_set_text(left_label_value, "   0");
+  lv_label_set_text(right_label_value, "   0");
   
   // Reset colors to white
   lv_obj_set_style_text_color(left_label_value, lv_color_make(255, 255, 255), LV_PART_MAIN);
@@ -186,6 +205,14 @@ lv_obj_t* get_right_value_label(void) {
 
 lv_obj_t* get_test_label(void) {
   return test_label_left;
+}
+
+lv_obj_t* get_odometer_label(void) {
+  return odometer_value;
+}
+
+lv_obj_t* get_trip_label(void) {
+  return trip_value;
 }
 
 uint8_t get_current_screen_mode(void) {

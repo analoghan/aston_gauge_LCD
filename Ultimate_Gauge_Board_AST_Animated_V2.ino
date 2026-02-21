@@ -1,14 +1,16 @@
 #include <Arduino.h>
+#include <Preferences.h>
 #include "CANBus_Driver.h"
 #include "LVGL_Driver.h"
 #include "I2C_Driver.h"
 #include "Screens.h"
 
-#include <esp_now.h>
-#include <esp_wifi.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include "freertos/queue.h"
+
+// Preferences object for persistent storage
+Preferences preferences;
 
 QueueHandle_t canMsgQueue;
 #define CAN_QUEUE_LENGTH 64
@@ -44,6 +46,97 @@ typedef struct {
 
 volatile DisplayData display_data = {0, 0, 0, 0, 0, 0, 0, 0, false, false, false, false, false};
 portMUX_TYPE display_data_mutex = portMUX_INITIALIZER_UNLOCKED;
+
+// Persistent storage variables
+uint32_t odometer_miles = 0;
+uint32_t trip_miles = 0;
+uint8_t last_screen_mode = 0;
+bool boot_complete = false; // Flag to track when boot screen is done
+bool restore_mode_pending = false; // Flag to trigger mode restore from main loop
+
+// Load values from NVS flash
+void load_persistent_data() {
+  preferences.begin("gauge", false); // Open in read-only mode
+  
+  odometer_miles = preferences.getUInt("odometer", 58625); // Default: 58,625 miles
+  trip_miles = preferences.getUInt("trip", 510);           // Default: 510 miles
+  last_screen_mode = preferences.getUChar("screen_mode", 0); // Default: mode 0
+  
+  preferences.end();
+  
+  Serial.printf("Loaded from NVS: Odometer=%lu, Trip=%lu, Mode=%d\n", 
+                odometer_miles, trip_miles, last_screen_mode);
+}
+
+// Save values to NVS flash
+void save_persistent_data() {
+  preferences.begin("gauge", false); // Open in read-write mode
+  
+  preferences.putUInt("odometer", odometer_miles);
+  preferences.putUInt("trip", trip_miles);
+  preferences.putUChar("screen_mode", last_screen_mode);
+  
+  preferences.end();
+  
+  Serial.printf("Saved to NVS: Odometer=%lu, Trip=%lu, Mode=%d\n", 
+                odometer_miles, trip_miles, last_screen_mode);
+}
+
+// Periodic save task - saves every 10 seconds if values changed
+void periodic_save_task(void *arg) {
+  static uint32_t last_odometer = 0;
+  static uint32_t last_trip = 0;
+  static uint8_t last_mode = 0;
+  
+  while (1) {
+    vTaskDelay(pdMS_TO_TICKS(10000)); // Check every 10 seconds
+    
+    // Only save if values have changed
+    if (odometer_miles != last_odometer || 
+        trip_miles != last_trip || 
+        last_screen_mode != last_mode) {
+      save_persistent_data();
+      last_odometer = odometer_miles;
+      last_trip = last_trip;
+      last_mode = last_screen_mode;
+    }
+  }
+}
+
+// Update odometer/trip display labels
+void update_odometer_display() {
+  static uint32_t last_displayed_odometer = 0;
+  static uint32_t last_displayed_trip = 0;
+  
+  if (odometer_miles != last_displayed_odometer) {
+    char text[16];
+    sprintf(text, "%lu", odometer_miles);
+    lv_label_set_text(get_odometer_label(), text);
+    last_displayed_odometer = odometer_miles;
+  }
+  
+  if (trip_miles != last_displayed_trip) {
+    char text[16];
+    sprintf(text, "%lu", trip_miles);
+    lv_label_set_text(get_trip_label(), text);
+    last_displayed_trip = trip_miles;
+  }
+}
+
+// Task to restore screen mode after boot screen completes
+void restore_screen_mode_task(void *arg) {
+  // Wait for boot screen to complete (4 seconds + small buffer)
+  vTaskDelay(pdMS_TO_TICKS(4100));
+  
+  // Set flag to trigger mode restore from main loop (LVGL-safe)
+  restore_mode_pending = true;
+  boot_complete = true;
+  
+  Serial.printf("Boot complete, will restore mode to %d\n", last_screen_mode);
+  
+  // Task is done, delete itself
+  vTaskDelete(NULL);
+}
 
 void drivers_init(void) {
   i2c_init();
@@ -185,6 +278,23 @@ void receive_can_task(void *arg) {
   }
 }
 
+// Helper function to format value with right padding for 4 total characters
+// Examples: "5   ", "42  ", "123 ", "-5  ", "-42 ", "123 "
+void format_value_with_padding(char* buffer, int value) {
+  char temp[8];
+  sprintf(temp, "%d", value);
+  int len = strlen(temp);
+  
+  // Copy the number
+  strcpy(buffer, temp);
+  
+  // Add padding spaces to reach 4 characters total
+  for (int i = len; i < 4; i++) {
+    buffer[i] = ' ';
+  }
+  buffer[4] = '\0';
+}
+
 void update_display_values(uint8_t mode, uint8_t left_val, uint8_t right_val) {
   static int last_left = -999;
   static int last_right = -999;
@@ -253,8 +363,8 @@ void update_display_values(uint8_t mode, uint8_t left_val, uint8_t right_val) {
   
   // Update left value
   if (left_processed != last_left) {
-    char text[6];
-    sprintf(text, "%d", left_processed);
+    char text[8];
+    format_value_with_padding(text, left_processed);
     lv_label_set_text(left_label, text);
     last_left = left_processed;
   }
@@ -269,8 +379,8 @@ void update_display_values(uint8_t mode, uint8_t left_val, uint8_t right_val) {
   
   // Update right value
   if (right_processed != last_right) {
-    char text[6];
-    sprintf(text, "%d", right_processed);
+    char text[8];
+    format_value_with_padding(text, right_processed);
     lv_label_set_text(right_label, text);
     last_right = right_processed;
   }
@@ -308,6 +418,7 @@ void update_display_from_can_data(void) {
   if (mode_change_requested) {
     uint8_t new_mode = (get_current_screen_mode() + 1) % 4;
     update_screen_labels(new_mode);
+    last_screen_mode = new_mode; // Save for persistence
     Serial.printf("Changed to mode %d\n", new_mode);
   }
   
@@ -364,6 +475,9 @@ void setup(void) {
   delay(100);
   Serial.println("Setup starting...");
   
+  // Load persistent data from NVS
+  load_persistent_data();
+  
   drivers_init();  
   set_backlight(40);  
   screens_init();
@@ -381,6 +495,12 @@ void setup(void) {
   xTaskCreatePinnedToCore(receive_can_task, "RX_CAN", 4096, NULL, 2, NULL, 1);  
   xTaskCreatePinnedToCore(delayed_can_init_task, "Init_CAN", 2048, NULL, 1, NULL, 1);  
   xTaskCreatePinnedToCore(watchdog_task, "Watchdog", 2048, NULL, 1, NULL, 0);
+  xTaskCreatePinnedToCore(periodic_save_task, "Save_NVS", 2048, NULL, 1, NULL, 0);
+  xTaskCreatePinnedToCore(restore_screen_mode_task, "Restore_Mode", 2048, NULL, 1, NULL, 0);
+  
+  // Update display with loaded values
+  delay(100); // Give LVGL time to initialize
+  update_odometer_display();
   
   Serial.println("Setup complete");
 }
@@ -390,15 +510,24 @@ void loop(void) {
   const unsigned long LVGL_INTERVAL_MS = 16; // Run LVGL at ~60Hz
   
   last_loop_time = millis();
+  unsigned long now = millis();
   
-  // Run LVGL timer handler
-  if (millis() - last_lvgl_time >= LVGL_INTERVAL_MS) {
-    lv_timer_handler();
-    last_lvgl_time = millis();
+  // Check if we need to restore screen mode after boot
+  if (restore_mode_pending) {
+    restore_mode_pending = false;
+    Serial.printf("Restoring screen mode to %d\n", last_screen_mode);
+    update_screen_labels(last_screen_mode);
   }
   
-  // Update data values - includes test label toggle
+  // Run LVGL timer handler at consistent intervals
+  if (now - last_lvgl_time >= LVGL_INTERVAL_MS) {
+    lv_timer_handler();
+    last_lvgl_time = now;
+  }
+  
+  // Update data values
   update_display_from_can_data();
   
-  vTaskDelay(pdMS_TO_TICKS(16));
+  // Small delay to prevent CPU hogging, but don't block LVGL timing
+  vTaskDelay(pdMS_TO_TICKS(1));
 }

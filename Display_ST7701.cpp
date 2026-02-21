@@ -391,6 +391,11 @@ void lcd_add_window(uint16_t Xstart, uint16_t Xend, uint16_t Ystart, uint16_t Ye
     Xend = ESP_PANEL_LCD_WIDTH;
   if (Yend >= ESP_PANEL_LCD_HEIGHT)
     Yend = ESP_PANEL_LCD_HEIGHT;
+  
+  // Validate coordinates before calling draw_bitmap
+  if (Xstart >= Xend || Ystart >= Yend) {
+    return; // Skip invalid coordinates
+  }
    
   esp_lcd_panel_draw_bitmap(panel_handle, Xstart, Ystart, Xend, Yend, color);
 }
