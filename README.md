@@ -29,9 +29,9 @@ A high-performance automotive gauge display system built on ESP32 with LVGL grap
 - Left Bank AFR
 - Right Bank AFR
 
-### Screen 3: Pressure Monitoring
+### Screen 3: Pressure & Speed
 - MAP Pressure
-- Coolant Pressure
+- Speed (MPH)
 
 ### Screen 4: Fuel System
 - Low Side Fuel Pressure
@@ -41,10 +41,11 @@ A high-performance automotive gauge display system built on ESP32 with LVGL grap
 
 | ID    | Description | Data Bytes |
 |-------|-------------|------------|
+| 0x550 | Trip meter control | B0: 1 = reset trip meter |
 | 0x551 | Engine temps/pressure | B0: Coolant temp, B1: Oil pressure |
 | 0x552 | Screen change trigger | B0: 1 = cycle screens |
 | 0x553 | AFR data | B0: Left AFR, B1: Right AFR |
-| 0x554 | Pressure data | B0: MAP, B1: Coolant pressure |
+| 0x554 | Pressure & speed data | B0: MAP, B1: Speed (MPH) |
 | 0x555 | Fuel pressure | B0: Low side, B1: High side |
 
 ## Architecture

@@ -34,7 +34,7 @@ typedef struct {
   uint8_t left_afr;
   uint8_t right_afr;
   uint8_t map_press;
-  uint8_t coolant_press;
+  uint8_t speed;
   uint8_t ls_fuel_press;
   uint8_t hs_fuel_press;
   bool updated_0x551;
@@ -42,10 +42,16 @@ typedef struct {
   bool updated_0x554;
   bool updated_0x555;
   bool screen_change_requested;
+  unsigned long last_update_0x551;
+  unsigned long last_update_0x553;
+  unsigned long last_update_0x554;
+  unsigned long last_update_0x555;
 } DisplayData;
 
-volatile DisplayData display_data = {0, 0, 0, 0, 0, 0, 0, 0, false, false, false, false, false};
+volatile DisplayData display_data = {0, 0, 0, 0, 0, 0, 0, 0, false, false, false, false, false, 0, 0, 0, 0};
 portMUX_TYPE display_data_mutex = portMUX_INITIALIZER_UNLOCKED;
+
+#define CAN_DATA_TIMEOUT_MS 5000 // Reset values after 5 seconds of no updates
 
 // Persistent storage variables
 uint32_t odometer_miles = 0;
@@ -54,13 +60,34 @@ uint8_t last_screen_mode = 0;
 bool boot_complete = false; // Flag to track when boot screen is done
 bool restore_mode_pending = false; // Flag to trigger mode restore from main loop
 
+// Odometer tracking variables
+volatile uint8_t current_speed = 0; // Current speed in MPH
+portMUX_TYPE speed_mutex = portMUX_INITIALIZER_UNLOCKED;
+volatile bool trip_reset_pending = false; // Flag to trigger trip reset from main loop
+volatile bool odometer_display_pending = false; // Flag to trigger odometer display update
+
 // Load values from NVS flash
 void load_persistent_data() {
   preferences.begin("gauge", false); // Open in read-only mode
   
-  odometer_miles = preferences.getUInt("odometer", 58625); // Default: 58,625 miles
-  trip_miles = preferences.getUInt("trip", 510);           // Default: 510 miles
+  // Load odometer/trip as hundredths of miles (default: 5862500 = 58,625.00 miles)
+  odometer_miles = preferences.getUInt("odometer", 5862500);
+  trip_miles = preferences.getUInt("trip", 51000); // Default: 510.00 miles
   last_screen_mode = preferences.getUChar("screen_mode", 0); // Default: mode 0
+  
+  // Check if values need migration (old format was whole miles, new is hundredths)
+  // If odometer is less than 100000 (1000 miles), it's likely old format
+  if (odometer_miles < 100000 && odometer_miles > 0) {
+    Serial.println("Migrating old odometer format to hundredths");
+    odometer_miles = odometer_miles * 100; // Convert to hundredths
+    trip_miles = trip_miles * 100;
+    preferences.end();
+    
+    // Save migrated values
+    preferences.begin("gauge", false);
+    preferences.putUInt("odometer", odometer_miles);
+    preferences.putUInt("trip", trip_miles);
+  }
   
   preferences.end();
   
@@ -108,18 +135,50 @@ void update_odometer_display() {
   static uint32_t last_displayed_odometer = 0;
   static uint32_t last_displayed_trip = 0;
   
+  // Check if labels exist before updating
+  lv_obj_t* odo_label = get_odometer_label();
+  lv_obj_t* trip_label = get_trip_label();
+  
+  if (odo_label == NULL || trip_label == NULL) {
+    Serial.println("Warning: Odometer/trip labels not ready yet");
+    return;
+  }
+  
   if (odometer_miles != last_displayed_odometer) {
     char text[16];
-    sprintf(text, "%lu", odometer_miles);
-    lv_label_set_text(get_odometer_label(), text);
+    // Display as miles with 1 decimal place (stored as hundredths)
+    float miles = odometer_miles / 100.0;
+    sprintf(text, "%.1f", miles);
+    lv_label_set_text(odo_label, text);
     last_displayed_odometer = odometer_miles;
   }
   
   if (trip_miles != last_displayed_trip) {
     char text[16];
-    sprintf(text, "%lu", trip_miles);
-    lv_label_set_text(get_trip_label(), text);
+    // Display as miles with 1 decimal place (stored as hundredths)
+    float miles = trip_miles / 100.0;
+    sprintf(text, "%.1f", miles);
+    lv_label_set_text(trip_label, text);
     last_displayed_trip = trip_miles;
+  }
+}
+
+// Reset trip meter (can be called via CAN message or button)
+void reset_trip_meter() {
+  trip_miles = 0;
+  update_odometer_display();
+  save_persistent_data(); // Save immediately
+  Serial.println("Trip meter reset");
+}
+
+// Process trip reset flag (called from main loop for LVGL safety)
+void process_trip_reset() {
+  if (trip_reset_pending) {
+    trip_reset_pending = false;
+    trip_miles = 0;
+    update_odometer_display();
+    save_persistent_data(); // Save immediately
+    Serial.println("Trip meter reset");
   }
 }
 
@@ -134,8 +193,59 @@ void restore_screen_mode_task(void *arg) {
   
   Serial.printf("Boot complete, will restore mode to %d\n", last_screen_mode);
   
+  // Wait a bit more for main screen to fully load, then trigger odometer display update
+  vTaskDelay(pdMS_TO_TICKS(200));
+  odometer_display_pending = true;
+  
   // Task is done, delete itself
   vTaskDelete(NULL);
+}
+
+// Task to calculate distance traveled and update odometer/trip
+void odometer_update_task(void *arg) {
+  const int SAMPLES_PER_SECOND = 10; // Sample every 100ms
+  uint32_t speed_samples[SAMPLES_PER_SECOND];
+  int sample_index = 0;
+  float accumulated_distance = 0.0; // Track fractional miles
+  
+  while (1) {
+    // Sample speed every 100ms
+    for (int i = 0; i < SAMPLES_PER_SECOND; i++) {
+      portENTER_CRITICAL(&speed_mutex);
+      speed_samples[i] = current_speed;
+      portEXIT_CRITICAL(&speed_mutex);
+      vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    
+    // Calculate average speed over the last second
+    uint32_t speed_sum = 0;
+    for (int i = 0; i < SAMPLES_PER_SECOND; i++) {
+      speed_sum += speed_samples[i];
+    }
+    float avg_speed_mph = speed_sum / (float)SAMPLES_PER_SECOND;
+    
+    // Calculate distance traveled in this second
+    // Distance = Speed * Time
+    // Speed is in MPH, time is 1 second = 1/3600 hour
+    float distance_miles = avg_speed_mph / 3600.0;
+    
+    // Accumulate distance
+    accumulated_distance += distance_miles;
+    
+    // Update odometer and trip when we've accumulated at least 0.01 miles
+    if (accumulated_distance >= 0.01) {
+      uint32_t miles_to_add = (uint32_t)(accumulated_distance * 100); // Convert to hundredths
+      odometer_miles += miles_to_add;
+      trip_miles += miles_to_add;
+      accumulated_distance -= (miles_to_add / 100.0);
+      
+      // Trigger display update from main loop (LVGL-safe)
+      // Only set flag if not already pending to avoid overwhelming the system
+      if (!odometer_display_pending) {
+        odometer_display_pending = true;
+      }
+    }
+  }
 }
 
 void drivers_init(void) {
@@ -231,10 +341,17 @@ void receive_can_task(void *arg) {
       
       portENTER_CRITICAL(&display_data_mutex);
       switch (message.identifier) {
+        case 0x550:
+          if (message.data[0] == 1) {
+            // Trip meter reset requested - set flag for main loop
+            trip_reset_pending = true;
+          }
+          break;
         case 0x551:
           display_data.water_temp = message.data[0];
           display_data.oil_press = message.data[1];
           display_data.updated_0x551 = true;
+          display_data.last_update_0x551 = millis();
           break;
         case 0x552:
           if (message.data[0] == 1) {
@@ -245,16 +362,24 @@ void receive_can_task(void *arg) {
           display_data.left_afr = message.data[0];
           display_data.right_afr = message.data[1];
           display_data.updated_0x553 = true;
+          display_data.last_update_0x553 = millis();
           break;
         case 0x554:
           display_data.map_press = message.data[0];
-          display_data.coolant_press = message.data[1];
+          display_data.speed = message.data[1];
           display_data.updated_0x554 = true;
+          display_data.last_update_0x554 = millis();
+          
+          // Update current speed for odometer tracking
+          portENTER_CRITICAL(&speed_mutex);
+          current_speed = message.data[1];
+          portEXIT_CRITICAL(&speed_mutex);
           break;
         case 0x555:
           display_data.ls_fuel_press = message.data[0];
           display_data.hs_fuel_press = message.data[1];
           display_data.updated_0x555 = true;
+          display_data.last_update_0x555 = millis();
           break;
       }
       portEXIT_CRITICAL(&display_data_mutex);
@@ -354,7 +479,7 @@ void update_display_values(uint8_t mode, uint8_t left_val, uint8_t right_val) {
       }
       break;
       
-    case 2: // Pressures
+    case 2: // MAP and Speed
     case 3: // Fuel
       left_processed = left_val;
       right_processed = right_val;
@@ -426,8 +551,37 @@ void update_display_from_can_data(void) {
   uint8_t left_val = 0, right_val = 0;
   bool has_update = false;
   uint8_t mode = get_current_screen_mode();
+  unsigned long now_time = millis();
   
   portENTER_CRITICAL(&display_data_mutex);
+  
+  // Check for timeouts and reset values if no updates received
+  if (now_time - display_data.last_update_0x551 > CAN_DATA_TIMEOUT_MS && display_data.last_update_0x551 > 0) {
+    display_data.water_temp = 0;
+    display_data.oil_press = 0;
+    display_data.updated_0x551 = true; // Force update to show 0
+  }
+  if (now_time - display_data.last_update_0x553 > CAN_DATA_TIMEOUT_MS && display_data.last_update_0x553 > 0) {
+    display_data.left_afr = 0;
+    display_data.right_afr = 0;
+    display_data.updated_0x553 = true;
+  }
+  if (now_time - display_data.last_update_0x554 > CAN_DATA_TIMEOUT_MS && display_data.last_update_0x554 > 0) {
+    display_data.map_press = 0;
+    display_data.speed = 0;
+    display_data.updated_0x554 = true;
+    
+    // Also reset current_speed for odometer tracking
+    portENTER_CRITICAL(&speed_mutex);
+    current_speed = 0;
+    portEXIT_CRITICAL(&speed_mutex);
+  }
+  if (now_time - display_data.last_update_0x555 > CAN_DATA_TIMEOUT_MS && display_data.last_update_0x555 > 0) {
+    display_data.ls_fuel_press = 0;
+    display_data.hs_fuel_press = 0;
+    display_data.updated_0x555 = true;
+  }
+  
   switch (mode) {
     case 0:
       if (display_data.updated_0x551) {
@@ -448,7 +602,7 @@ void update_display_from_can_data(void) {
     case 2:
       if (display_data.updated_0x554) {
         left_val = display_data.map_press;
-        right_val = display_data.coolant_press;
+        right_val = display_data.speed;
         display_data.updated_0x554 = false;
         has_update = true;
       }
@@ -481,6 +635,11 @@ void setup(void) {
   drivers_init();  
   set_backlight(40);  
   screens_init();
+  
+  // Update odometer/trip display with loaded values before boot screen shows
+  delay(50); // Small delay to ensure LVGL is ready
+  update_odometer_display();
+  
   set_exio(EXIO_PIN4, Low);
   
   esp_reset_reason_t reason = esp_reset_reason();
@@ -497,10 +656,9 @@ void setup(void) {
   xTaskCreatePinnedToCore(watchdog_task, "Watchdog", 2048, NULL, 1, NULL, 0);
   xTaskCreatePinnedToCore(periodic_save_task, "Save_NVS", 2048, NULL, 1, NULL, 0);
   xTaskCreatePinnedToCore(restore_screen_mode_task, "Restore_Mode", 2048, NULL, 1, NULL, 0);
+  xTaskCreatePinnedToCore(odometer_update_task, "Odometer", 4096, NULL, 1, NULL, 0);
   
-  // Update display with loaded values
-  delay(100); // Give LVGL time to initialize
-  update_odometer_display();
+  // Don't update display here - will be done after boot screen in restore task
   
   Serial.println("Setup complete");
 }
@@ -518,6 +676,15 @@ void loop(void) {
     Serial.printf("Restoring screen mode to %d\n", last_screen_mode);
     update_screen_labels(last_screen_mode);
   }
+  
+  // Check if odometer display update is pending
+  if (odometer_display_pending) {
+    odometer_display_pending = false;
+    update_odometer_display();
+  }
+  
+  // Check if trip reset was requested
+  process_trip_reset();
   
   // Run LVGL timer handler at consistent intervals
   if (now - last_lvgl_time >= LVGL_INTERVAL_MS) {

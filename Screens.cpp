@@ -144,17 +144,17 @@ void main_scr_init(void) {
   lv_obj_add_style(odometer_label, &style_label_title, 0);
 
   odometer_value = lv_label_create(main_scr);
-  lv_label_set_text_static(odometer_value, "58,625");
-  lv_obj_set_pos(odometer_value, 35, 80);
+  lv_label_set_text(odometer_value, "0.0");
+  lv_obj_set_pos(odometer_value, 35, 70);
   lv_obj_add_style(odometer_value, &style_label_title, 0);
 
   trip_label = lv_label_create(main_scr);
   lv_label_set_text_static(trip_label, "Trip");
-  lv_obj_set_pos(trip_label, 35, 702);
+  lv_obj_set_pos(trip_label, 35, 712);
   lv_obj_add_style(trip_label, &style_label_title, 0);
 
   trip_value = lv_label_create(main_scr);
-  lv_label_set_text_static(trip_value, "510");
+  lv_label_set_text(trip_value, "0.0");
   lv_obj_set_pos(trip_value, 35, 782);
   lv_obj_add_style(trip_value, &style_label_title, 0);
   
@@ -177,7 +177,7 @@ void update_screen_labels(uint8_t mode) {
       break;
     case 2:
       lv_label_set_text(test_label_left, "MAP");
-      lv_label_set_text(test_label_right, "Coolant PSI");
+      lv_label_set_text(test_label_right, "Speed");
       break;
     case 3:
       lv_label_set_text(test_label_left, "LS Fuel PSI");
