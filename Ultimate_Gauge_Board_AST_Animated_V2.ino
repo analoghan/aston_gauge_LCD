@@ -474,21 +474,25 @@ void receive_can_task(void *arg) {
   }
 }
 
-// Helper function to format value with right padding for 4 total characters
-// Examples: "5   ", "42  ", "123 ", "-5  ", "-42 ", "123 "
+// Helper function to format value with leading padding for 4 total characters (right-aligned)
+// Examples: "   5", "  42", " 123", "1234", "  -5", " -42", "-123"
 void format_value_with_padding(char* buffer, int value) {
   char temp[8];
   sprintf(temp, "%d", value);
   int len = strlen(temp);
   
-  // Copy the number
-  strcpy(buffer, temp);
+  // Calculate padding needed
+  int padding = 4 - len;
+  if (padding < 0) padding = 0;
   
-  // Add padding spaces to reach 4 characters total
-  for (int i = len; i < 4; i++) {
+  // Add leading spaces
+  int i;
+  for (i = 0; i < padding; i++) {
     buffer[i] = ' ';
   }
-  buffer[4] = '\0';
+  
+  // Copy the number after the padding
+  strcpy(buffer + padding, temp);
 }
 
 void update_display_values(uint8_t mode, uint8_t left_val, uint8_t right_val) {
@@ -519,15 +523,19 @@ void update_display_values(uint8_t mode, uint8_t left_val, uint8_t right_val) {
       left_processed = left_val - 40;
       right_processed = right_val;
       
-      // Coolant temp colors
-      if (left_processed < 100) {
+      // Coolant temp colors (white if 0, blue if cold, red if hot)
+      if (left_processed == 0) {
+        // Keep white for reset/timeout
+      } else if (left_processed < 100) {
         left_r = 0; left_g = 0; left_b = 255;
       } else if (left_processed >= 210) {
         left_r = 255; left_g = 0; left_b = 0;
       }
       
-      // Oil pressure colors
-      if (right_processed < 20) {
+      // Oil pressure colors (white if 0, red if low)
+      if (right_processed == 0) {
+        // Keep white for reset/timeout
+      } else if (right_processed < 20) {
         right_r = 255; right_g = 0; right_b = 0;
       }
       break;
@@ -536,14 +544,18 @@ void update_display_values(uint8_t mode, uint8_t left_val, uint8_t right_val) {
       left_processed = left_val;
       right_processed = right_val;
       
-      // AFR colors (green for 12-16 range)
-      if (left_processed < 12 || left_processed > 16) {
+      // AFR colors (white if 0, green for 12-16 range, red otherwise)
+      if (left_processed == 0) {
+        // Keep white for reset/timeout
+      } else if (left_processed < 12 || left_processed > 16) {
         left_r = 255; left_g = 0; left_b = 0;
       } else {
         left_r = 0; left_g = 255; left_b = 0;
       }
       
-      if (right_processed < 12 || right_processed > 16) {
+      if (right_processed == 0) {
+        // Keep white for reset/timeout
+      } else if (right_processed < 12 || right_processed > 16) {
         right_r = 255; right_g = 0; right_b = 0;
       } else {
         right_r = 0; right_g = 255; right_b = 0;
