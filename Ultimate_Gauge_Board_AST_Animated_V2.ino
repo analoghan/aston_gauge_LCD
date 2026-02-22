@@ -441,7 +441,7 @@ void receive_can_task(void *arg) {
         case 0x557:
           // Reset max values
           portENTER_CRITICAL(&max_values_mutex);
-          max_values.water_temp_max = 0;
+          max_values.water_temp_max = 40; // Set to 40 so it displays as 0 after -40 offset
           max_values.oil_press_max = 0;
           max_values.left_afr_max = 0;
           max_values.right_afr_max = 0;
