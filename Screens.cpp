@@ -28,16 +28,18 @@ static uint8_t current_screen_mode = 0; // 0=temp/oil, 1=AFR, 2=pressures, 3=fue
 void init_styles(void) {
   if (styles_initialized) return;
   
-  // Style for title labels (28pt white text, rotated)
+  // Style for title labels (28pt custom font, white text, rotated)
   lv_style_init(&style_label_title);
-  lv_style_set_text_font(&style_label_title, &lv_font_montserrat_28);
+  //lv_style_set_text_font(&style_label_title, &lv_font_montserrat_28);
+  lv_style_set_text_font(&style_label_title, &aston_28);
   lv_style_set_text_color(&style_label_title, lv_color_make(255, 255, 255));
   lv_style_set_transform_angle(&style_label_title, 900);
   lv_style_set_text_opa(&style_label_title, LV_OPA_COVER); // Full opacity for smoother rendering
   
-  // Style for value labels (48pt white text, rotated)
+  // Style for value labels (48pt custom font, white text, rotated)
   lv_style_init(&style_label_value);
-  lv_style_set_text_font(&style_label_value, &lv_font_montserrat_48);
+  //lv_style_set_text_font(&style_label_value, &lv_font_montserrat_48);
+  lv_style_set_text_font(&style_label_value, &aston_48);
   lv_style_set_text_color(&style_label_value, lv_color_make(255, 255, 255));
   lv_style_set_transform_angle(&style_label_value, 900);
   lv_style_set_text_opa(&style_label_value, LV_OPA_COVER); // Full opacity for smoother rendering
@@ -127,32 +129,32 @@ void main_scr_init(void) {
   // Value labels (adjusted for 240px width)
   left_label_value = lv_label_create(main_scr);
   lv_label_set_text_static(left_label_value, "   0");
-  lv_obj_set_pos(left_label_value, 140, 125);
+  lv_obj_set_pos(left_label_value, 130, 125);
   lv_obj_add_style(left_label_value, &style_label_value, 0);
 
   right_label_value = lv_label_create(main_scr);
   lv_label_set_text_static(right_label_value, "   0");
-  lv_obj_set_pos(right_label_value, 140, 715);
+  lv_obj_set_pos(right_label_value, 130, 715);
   lv_obj_add_style(right_label_value, &style_label_value, 0);
 
   odometer_label = lv_label_create(main_scr);
   lv_label_set_text_static(odometer_label, "Miles");
-  lv_obj_set_pos(odometer_label, 35, 200);
+  lv_obj_set_pos(odometer_label, 35, 210);
   lv_obj_add_style(odometer_label, &style_label_title, 0);
 
   odometer_value = lv_label_create(main_scr);
   lv_label_set_text(odometer_value, "0.0");
-  lv_obj_set_pos(odometer_value, 35, 70);
+  lv_obj_set_pos(odometer_value, 35, 80);
   lv_obj_add_style(odometer_value, &style_label_title, 0);
 
   trip_label = lv_label_create(main_scr);
   lv_label_set_text_static(trip_label, "Trip");
-  lv_obj_set_pos(trip_label, 35, 712);
+  lv_obj_set_pos(trip_label, 35, 702);
   lv_obj_add_style(trip_label, &style_label_title, 0);
 
   trip_value = lv_label_create(main_scr);
   lv_label_set_text(trip_value, "0.0");
-  lv_obj_set_pos(trip_value, 35, 782);
+  lv_obj_set_pos(trip_value, 35, 772);
   lv_obj_add_style(trip_value, &style_label_title, 0);
   
   // Add callback for when main screen is loaded
