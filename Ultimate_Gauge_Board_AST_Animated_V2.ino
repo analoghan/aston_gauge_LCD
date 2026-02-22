@@ -9,16 +9,19 @@
 #include <freertos/task.h>
 #include "freertos/queue.h"
 
+// ============================================================================
+// GLOBAL VARIABLES AND CONFIGURATION
+// ============================================================================
+
 // Preferences object for persistent storage
 Preferences preferences;
 
+// CAN Bus Configuration
 QueueHandle_t canMsgQueue;
 #define CAN_QUEUE_LENGTH 64
 #define CAN_QUEUE_ITEM_SIZE sizeof(twai_message_t)
-
 #define TAG "TWAI"
 
-// CONTROL VARIABLE INIT
 bool can_initiated = false;
 
 // Watchdog tracking
@@ -26,6 +29,10 @@ unsigned long last_can_message_time = 0;
 unsigned long last_loop_time = 0;
 #define CAN_TIMEOUT_MS 5000
 #define LOOP_TIMEOUT_MS 1000
+
+// ============================================================================
+// CAN DATA STRUCTURES
+// ============================================================================
 
 // Thread-safe data structure for passing CAN data to UI
 typedef struct {
@@ -53,12 +60,40 @@ portMUX_TYPE display_data_mutex = portMUX_INITIALIZER_UNLOCKED;
 
 #define CAN_DATA_TIMEOUT_MS 5000 // Reset values after 5 seconds of no updates
 
+// Max value tracking
+typedef struct {
+  uint8_t water_temp_max;
+  uint8_t oil_press_max;
+  uint8_t left_afr_max;
+  uint8_t right_afr_max;
+  uint8_t map_press_max;
+  uint8_t speed_max;
+  uint8_t ls_fuel_press_max;
+  uint8_t hs_fuel_press_max;
+} MaxValues;
+
+volatile MaxValues max_values = {0, 0, 0, 0, 0, 0, 0, 0};
+portMUX_TYPE max_values_mutex = portMUX_INITIALIZER_UNLOCKED;
+
+// Max recall state
+volatile bool max_recall_active = false;
+volatile unsigned long max_recall_start_time = 0;
+#define MAX_RECALL_DURATION_MS 2000 // Show max values for 2 seconds
+
+// ============================================================================
+// PERSISTENT STORAGE
+// ============================================================================
+
 // Persistent storage variables
 uint32_t odometer_miles = 0;
 uint32_t trip_miles = 0;
 uint8_t last_screen_mode = 0;
 bool boot_complete = false; // Flag to track when boot screen is done
 bool restore_mode_pending = false; // Flag to trigger mode restore from main loop
+
+// ============================================================================
+// ODOMETER TRACKING
+// ============================================================================
 
 // Odometer tracking variables
 volatile uint8_t current_speed = 0; // Current speed in MPH
@@ -161,14 +196,6 @@ void update_odometer_display() {
     lv_label_set_text(trip_label, text);
     last_displayed_trip = trip_miles;
   }
-}
-
-// Reset trip meter (can be called via CAN message or button)
-void reset_trip_meter() {
-  trip_miles = 0;
-  update_odometer_display();
-  save_persistent_data(); // Save immediately
-  Serial.println("Trip meter reset");
 }
 
 // Process trip reset flag (called from main loop for LVGL safety)
@@ -352,6 +379,12 @@ void receive_can_task(void *arg) {
           display_data.oil_press = message.data[1];
           display_data.updated_0x551 = true;
           display_data.last_update_0x551 = millis();
+          
+          // Update max values
+          portENTER_CRITICAL(&max_values_mutex);
+          if (message.data[0] > max_values.water_temp_max) max_values.water_temp_max = message.data[0];
+          if (message.data[1] > max_values.oil_press_max) max_values.oil_press_max = message.data[1];
+          portEXIT_CRITICAL(&max_values_mutex);
           break;
         case 0x552:
           if (message.data[0] == 1) {
@@ -363,12 +396,24 @@ void receive_can_task(void *arg) {
           display_data.right_afr = message.data[1];
           display_data.updated_0x553 = true;
           display_data.last_update_0x553 = millis();
+          
+          // Update max values
+          portENTER_CRITICAL(&max_values_mutex);
+          if (message.data[0] > max_values.left_afr_max) max_values.left_afr_max = message.data[0];
+          if (message.data[1] > max_values.right_afr_max) max_values.right_afr_max = message.data[1];
+          portEXIT_CRITICAL(&max_values_mutex);
           break;
         case 0x554:
           display_data.map_press = message.data[0];
           display_data.speed = message.data[1];
           display_data.updated_0x554 = true;
           display_data.last_update_0x554 = millis();
+          
+          // Update max values
+          portENTER_CRITICAL(&max_values_mutex);
+          if (message.data[0] > max_values.map_press_max) max_values.map_press_max = message.data[0];
+          if (message.data[1] > max_values.speed_max) max_values.speed_max = message.data[1];
+          portEXIT_CRITICAL(&max_values_mutex);
           
           // Update current speed for odometer tracking
           portENTER_CRITICAL(&speed_mutex);
@@ -380,6 +425,32 @@ void receive_can_task(void *arg) {
           display_data.hs_fuel_press = message.data[1];
           display_data.updated_0x555 = true;
           display_data.last_update_0x555 = millis();
+          
+          // Update max values
+          portENTER_CRITICAL(&max_values_mutex);
+          if (message.data[0] > max_values.ls_fuel_press_max) max_values.ls_fuel_press_max = message.data[0];
+          if (message.data[1] > max_values.hs_fuel_press_max) max_values.hs_fuel_press_max = message.data[1];
+          portEXIT_CRITICAL(&max_values_mutex);
+          break;
+        case 0x556:
+          // Max recall requested
+          max_recall_active = true;
+          max_recall_start_time = millis();
+          Serial.println("Max recall activated");
+          break;
+        case 0x557:
+          // Reset max values
+          portENTER_CRITICAL(&max_values_mutex);
+          max_values.water_temp_max = 0;
+          max_values.oil_press_max = 0;
+          max_values.left_afr_max = 0;
+          max_values.right_afr_max = 0;
+          max_values.map_press_max = 0;
+          max_values.speed_max = 0;
+          max_values.ls_fuel_press_max = 0;
+          max_values.hs_fuel_press_max = 0;
+          portEXIT_CRITICAL(&max_values_mutex);
+          Serial.println("Max values reset");
           break;
       }
       portEXIT_CRITICAL(&display_data_mutex);
@@ -547,6 +618,12 @@ void update_display_from_can_data(void) {
     Serial.printf("Changed to mode %d\n", new_mode);
   }
   
+  // Check if max recall is active and if it should expire
+  if (max_recall_active && (now - max_recall_start_time >= MAX_RECALL_DURATION_MS)) {
+    max_recall_active = false;
+    Serial.println("Max recall deactivated");
+  }
+  
   // Get data based on current mode
   uint8_t left_val = 0, right_val = 0;
   bool has_update = false;
@@ -557,7 +634,7 @@ void update_display_from_can_data(void) {
   
   // Check for timeouts and reset values if no updates received
   if (now_time - display_data.last_update_0x551 > CAN_DATA_TIMEOUT_MS && display_data.last_update_0x551 > 0) {
-    display_data.water_temp = 0;
+    display_data.water_temp = 40; // Set to 40 so it displays as 0 after -40 offset
     display_data.oil_press = 0;
     display_data.updated_0x551 = true; // Force update to show 0
   }
@@ -584,33 +661,61 @@ void update_display_from_can_data(void) {
   
   switch (mode) {
     case 0:
-      if (display_data.updated_0x551) {
-        left_val = display_data.water_temp;
-        right_val = display_data.oil_press;
+      if (display_data.updated_0x551 || max_recall_active) {
+        if (max_recall_active) {
+          portENTER_CRITICAL(&max_values_mutex);
+          left_val = max_values.water_temp_max;
+          right_val = max_values.oil_press_max;
+          portEXIT_CRITICAL(&max_values_mutex);
+        } else {
+          left_val = display_data.water_temp;
+          right_val = display_data.oil_press;
+        }
         display_data.updated_0x551 = false;
         has_update = true;
       }
       break;
     case 1:
-      if (display_data.updated_0x553) {
-        left_val = display_data.left_afr;
-        right_val = display_data.right_afr;
+      if (display_data.updated_0x553 || max_recall_active) {
+        if (max_recall_active) {
+          portENTER_CRITICAL(&max_values_mutex);
+          left_val = max_values.left_afr_max;
+          right_val = max_values.right_afr_max;
+          portEXIT_CRITICAL(&max_values_mutex);
+        } else {
+          left_val = display_data.left_afr;
+          right_val = display_data.right_afr;
+        }
         display_data.updated_0x553 = false;
         has_update = true;
       }
       break;
     case 2:
-      if (display_data.updated_0x554) {
-        left_val = display_data.map_press;
-        right_val = display_data.speed;
+      if (display_data.updated_0x554 || max_recall_active) {
+        if (max_recall_active) {
+          portENTER_CRITICAL(&max_values_mutex);
+          left_val = max_values.map_press_max;
+          right_val = max_values.speed_max;
+          portEXIT_CRITICAL(&max_values_mutex);
+        } else {
+          left_val = display_data.map_press;
+          right_val = display_data.speed;
+        }
         display_data.updated_0x554 = false;
         has_update = true;
       }
       break;
     case 3:
-      if (display_data.updated_0x555) {
-        left_val = display_data.ls_fuel_press;
-        right_val = display_data.hs_fuel_press;
+      if (display_data.updated_0x555 || max_recall_active) {
+        if (max_recall_active) {
+          portENTER_CRITICAL(&max_values_mutex);
+          left_val = max_values.ls_fuel_press_max;
+          right_val = max_values.hs_fuel_press_max;
+          portEXIT_CRITICAL(&max_values_mutex);
+        } else {
+          left_val = display_data.ls_fuel_press;
+          right_val = display_data.hs_fuel_press;
+        }
         display_data.updated_0x555 = false;
         has_update = true;
       }

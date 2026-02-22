@@ -47,6 +47,8 @@ A high-performance automotive gauge display system built on ESP32 with LVGL grap
 | 0x553 | AFR data | B0: Left AFR, B1: Right AFR |
 | 0x554 | Pressure & speed data | B0: MAP, B1: Speed (MPH) |
 | 0x555 | Fuel pressure | B0: Low side, B1: High side |
+| 0x556 | Max value recall | Display max values for 2 seconds |
+| 0x557 | Reset max values | Clear all stored maximum values |
 
 ## Architecture
 

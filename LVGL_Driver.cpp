@@ -37,15 +37,12 @@ void lvgl_init(void) {
 
   lv_display_t *disp_drv = lv_display_create(LVGL_WIDTH, LVGL_HEIGHT);
 
-  /* Initialize the draw buffer */
-//  lv_display_set_buffers(disp_drv, buf1, NULL, (LVGL_WIDTH * LVGL_HEIGHT) / BUFFER_FACTOR, LV_DISPLAY_RENDER_MODE_PARTIAL);
+  /* Initialize the draw buffer with double buffering */
   lv_display_set_buffers(disp_drv, buf1, buf2, (LVGL_WIDTH * LVGL_HEIGHT) / BUFFER_FACTOR, LV_DISPLAY_RENDER_MODE_PARTIAL);
 
   /* Set the display resolution to virtual size only - don't set physical resolution */
   lv_display_set_resolution(disp_drv, LVGL_WIDTH, LVGL_HEIGHT);
   // Physical resolution not set - we handle offset in flush callback
-
-//  lv_display_set_rotation(disp_drv, LV_DISP_ROTATION_90);  // RGB displays don't support software rotation
 
   /* Set flush callback */
   lv_display_set_flush_cb(disp_drv, lvgl_flush_callback);

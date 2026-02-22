@@ -106,10 +106,7 @@ void boot_scr1_init(void)
   lv_obj_add_event_cb(boot_scr1, boot_scr1_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 }
 
-// create the single main screen with reusable labels
-// create the single main screen with reusable labels
-// create the single main screen with reusable labels
-// create the single main screen with reusable labels (adjusted for 240x960)
+// Create the single main screen with reusable labels (adjusted for 240x960)
 void main_scr_init(void) {
   main_scr = lv_obj_create(NULL);
   lv_obj_set_style_bg_color(main_scr, lv_color_make(0,0,0), 0);
