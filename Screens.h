@@ -1,6 +1,10 @@
 #pragma once
 #include <lvgl.h>
 
+// Image declarations
+LV_IMG_DECLARE(PeakRecall);
+LV_IMG_DECLARE(ClearPeakRecall);
+
 // Screen objects
 extern lv_obj_t *main_scr;
 extern lv_obj_t *boot_scr1;

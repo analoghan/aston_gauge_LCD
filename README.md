@@ -81,9 +81,10 @@ Six status icons display on the right side of the screen:
 | Launch Control | CAN 0x560 B2=1 | Shows for 2s on startup, or while CAN active (500ms timeout) |
 | 2-Step | CAN 0x560 B3=1 | Shows for 2s on startup, or while CAN active (500ms timeout) |
 | Exhaust Bypass | CAN 0x560 B4=1 | Shows for 2s on startup, or while CAN active (500ms timeout) |
-| Peak Recall | CAN 0x556 active | Shows for 2s on startup, or during max recall mode |
+| Peak Recall | CAN 0x556 active | Shows PeakRecall icon for 2s on startup or during max recall |
+| Clear Peak Recall | CAN 0x557 active | Shows ClearPeakRecall icon for 2s when clearing max values |
 
-All icons (except Peak Recall) hide 500ms after last CAN message received.
+All icons (except Peak Recall variants) hide 500ms after last CAN message received. The Peak Recall icon dynamically swaps between two images based on context (recall vs clear).
 
 ## CAN Message IDs
 
@@ -162,6 +163,7 @@ pio run -t upload
     ├── TwoStep.h
     ├── ExhaustBypass.h
     ├── PeakRecall.h
+    ├── ClearPeakRecall.h
     ├── MotecLogo.h
     └── jake.h
 ```

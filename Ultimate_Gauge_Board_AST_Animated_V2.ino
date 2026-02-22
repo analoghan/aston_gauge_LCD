@@ -102,6 +102,7 @@ portMUX_TYPE max_values_mutex = portMUX_INITIALIZER_UNLOCKED;
 
 // Max recall state
 volatile bool max_recall_active = false;
+volatile bool max_clear_active = false; // Track if we're clearing (vs recalling)
 volatile unsigned long max_recall_start_time = 0;
 #define MAX_RECALL_DURATION_MS 2000 // Show max values for 2 seconds
 
@@ -535,13 +536,14 @@ void receive_can_task(void *arg) {
         case 0x556:
           // Max recall requested
           max_recall_active = true;
+          max_clear_active = false; // Showing recall, not clear
           max_recall_start_time = millis();
           Serial.println("Max recall activated");
           break;
-        case 0x557:
+        case 0x557: {
           // Reset max values for currently displayed screen mode only
-          portENTER_CRITICAL(&max_values_mutex);
           uint8_t current_mode = get_current_screen_mode();
+          portENTER_CRITICAL(&max_values_mutex);
           switch (current_mode) {
             case 0: // Temp/Oil
               max_values.water_temp_max = 40; // Set to 40 so it displays as 0 after -40 offset
@@ -570,7 +572,13 @@ void receive_can_task(void *arg) {
               break;
           }
           portEXIT_CRITICAL(&max_values_mutex);
+          
+          // Show clear icon for 2 seconds
+          max_recall_active = true;
+          max_clear_active = true; // Showing clear, not recall
+          max_recall_start_time = millis();
           break;
+        }
         case 0x558:
           if (message.data[0] == 1) {
             display_data.screen_change_requested = true;
@@ -787,6 +795,7 @@ void update_display_from_can_data(void) {
   // Check if max recall is active and if it should expire
   if (max_recall_active && (now - max_recall_start_time >= MAX_RECALL_DURATION_MS)) {
     max_recall_active = false;
+    max_clear_active = false; // Reset both flags
     Serial.println("Max recall deactivated");
   }
   
@@ -1015,6 +1024,12 @@ void update_status_icons() {
   }
   
   if (show_peak_recall) {
+    // Swap image source based on clear vs recall mode
+    if (max_clear_active) {
+      lv_image_set_src(peak_recall_icon, &ClearPeakRecall);
+    } else {
+      lv_image_set_src(peak_recall_icon, &PeakRecall);
+    }
     lv_obj_clear_flag(peak_recall_icon, LV_OBJ_FLAG_HIDDEN);
   } else {
     lv_obj_add_flag(peak_recall_icon, LV_OBJ_FLAG_HIDDEN);

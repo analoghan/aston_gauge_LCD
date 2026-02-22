@@ -6,6 +6,7 @@
 #include "images/ExhaustBypass.h"
 #include "images/TwoStep.h"
 #include "images/PeakRecall.h"
+#include "images/ClearPeakRecall.h"
 
 LV_IMG_DECLARE(AstonLogo);
 LV_IMG_DECLARE(CruiseControl);
@@ -14,6 +15,7 @@ LV_IMG_DECLARE(flag);
 LV_IMG_DECLARE(ExhaustBypass);
 LV_IMG_DECLARE(TwoStep);
 LV_IMG_DECLARE(PeakRecall);
+LV_IMG_DECLARE(ClearPeakRecall);
 
 // Single main screen
 lv_obj_t *main_scr = NULL;
@@ -36,6 +38,7 @@ lv_obj_t *launch_img = NULL;
 lv_obj_t *exhaust_bypass_img = NULL;
 lv_obj_t *two_step_img = NULL;
 lv_obj_t *peak_recall_img = NULL;
+lv_obj_t *clear_peak_recall_img = NULL;
 
 // Reusable style objects
 static lv_style_t style_label_title;
