@@ -4,56 +4,87 @@ A high-performance automotive gauge display system built on ESP32 with LVGL grap
 
 ## Features
 
-- **Multi-Screen Display**: 4 configurable screens showing different vehicle parameters
+- **Multi-Screen Display**: 5 configurable screens showing different vehicle parameters
+- **Dual Trip Meters**: Two independent trip meters with separate tracking and reset
+- **Physical Button Controls**: TCA9554 GPIO inputs for screen change, trip reset, and trip switch
 - **CAN Bus Integration**: Real-time data from vehicle CAN network (500kbps)
+- **Max Value Recall**: Track and display maximum values for all sensors
+- **Persistent Storage**: Odometer and trip values saved to NVS flash
 - **Thread-Safe Architecture**: FreeRTOS tasks for reliable concurrent operation
 - **Smooth Animations**: 60Hz refresh rate with optimized LVGL rendering
 - **Robust Error Handling**: Automatic CAN bus recovery and watchdog monitoring
 - **Color-Coded Warnings**: Dynamic color changes based on sensor thresholds
+- **Custom Fonts**: Aston Martin branded fonts for authentic styling
 
 ## Hardware Requirements
 
-- ESP32 microcontroller
-- ST7701 display (1504x480 resolution)
-- TCA9554PWR I2C GPIO expander
+- ESP32-S3 microcontroller
+- ST7701 display (480x1504 resolution, rotated 90°)
+- TCA9554PWR I2C GPIO expander (for button inputs)
 - CAN transceiver (connected to GPIO 4/5)
 - I2C peripherals
 
+## Physical Controls (TCA9554 GPIO)
+
+| Pin | Function | Action |
+|-----|----------|--------|
+| P5  | Screen Change | Cycle through 5 display modes |
+| P6  | Trip Reset | Reset currently displayed trip meter |
+| P7  | Trip Switch | Toggle between Trip 1 and Trip 2 |
+| P8  | Reserved | Available for future use |
+
+All inputs use internal pull-ups and trigger on falling edge (pull to ground).
+
 ## Screens
 
-### Screen 1: Engine Vitals
-- Coolant Temperature (°F)
-- Oil Pressure (PSI)
+All screens display odometer and trip meter values at the bottom.
 
-### Screen 2: Air/Fuel Ratio
-- Left Bank AFR
-- Right Bank AFR
+### Screen 0: Engine Vitals
+- Coolant Temperature (°F) - Blue when cold (<100°F), Red when hot (≥210°F)
+- Oil Pressure (PSI) - Red when low (<20 PSI)
 
-### Screen 3: Pressure & Speed
-- MAP Pressure
+### Screen 1: Air/Fuel Ratio
+- Left Bank AFR - Green (12-16), Red (out of range)
+- Right Bank AFR - Green (12-16), Red (out of range)
+
+### Screen 2: Pressure & Speed
+- MAP Pressure (PSI)
 - Speed (MPH)
 
-### Screen 4: Fuel System
-- Low Side Fuel Pressure
-- Direct Injection Fuel Pressure
+### Screen 3: Fuel System
+- Low Side Fuel Pressure (PSI)
+- Direct Injection Fuel Pressure (PSI)
 
-### Screen 5: Fuel & Electrical
+### Screen 4: Fuel & Electrical
 - Ethanol Percentage (%)
 - Battery Voltage (V)
+
+## Trip Meters
+
+- **Dual Independent Trip Meters**: Track two separate trips simultaneously
+- **Trip 1**: Default on startup, ideal for tank-to-tank tracking
+- **Trip 2**: Secondary trip for journey-specific tracking
+- **Both track continuously**: Distance accumulates on both trips regardless of which is displayed
+- **Individual Reset**: Only the currently displayed trip is reset
+- **Persistent Storage**: Both trip values saved to NVS flash every 10 seconds
+- **Switch Control**: Toggle between Trip 1 and Trip 2 via P7 button or CAN 0x559
 
 ## CAN Message IDs
 
 | ID    | Description | Data Bytes |
 |-------|-------------|------------|
-| 0x550 | Trip meter control | B0: 1 = reset trip meter |
-| 0x551 | Engine temps/pressure | B0: Coolant temp, B1: Oil pressure |
+| 0x550 | Trip meter reset | B0: 1 = reset currently displayed trip |
+| 0x551 | Engine temps/pressure | B0: Coolant temp (+40°F offset), B1: Oil pressure |
 | 0x552 | Fuel & electrical | B0: Ethanol %, B1: Battery volts |
 | 0x553 | AFR data | B0: Left AFR, B1: Right AFR |
 | 0x554 | Pressure & speed data | B0: MAP, B1: Speed (MPH) |
 | 0x555 | Fuel pressure | B0: Low side, B1: High side |
 | 0x556 | Max value recall | Display max values for 2 seconds |
 | 0x557 | Reset max values | Clear all stored maximum values |
-| 0x558 | Screen change trigger | B0: 1 = cycle screens |
+| 0x558 | Screen change | B0: 1 = cycle through screens |
+| 0x559 | Trip switch | B0: 1 = toggle between Trip 1 and Trip 2 |
+
+**Note**: All CAN controls have physical button equivalents on TCA9554 P5-P7
 
 ## Architecture
 
@@ -117,6 +148,9 @@ pio run -t upload
 - **Loop frequency**: ~60Hz (16ms)
 - **Display update rate**: 10Hz (100ms)
 - **CAN message processing**: Up to 1000+ msgs/sec
+- **TCA9554 polling**: 50ms (20Hz)
+- **Odometer calculation**: 1Hz with 10-sample averaging
+- **Persistent storage**: Auto-save every 10 seconds if changed
 - **Memory**: ~4KB stack per task
 
 ## Safety Features
@@ -124,8 +158,10 @@ pio run -t upload
 - Automatic CAN bus error recovery
 - Queue overflow detection and handling
 - Watchdog monitoring for system freezes
-- Debounced screen changes (500ms minimum)
+- 5-second timeout resets values to 0 when no CAN data received
 - Thread-safe data access with mutexes
+- Debounced button inputs (50ms polling with edge detection)
+- Persistent storage prevents data loss on power cycle
 
 ## Customization
 

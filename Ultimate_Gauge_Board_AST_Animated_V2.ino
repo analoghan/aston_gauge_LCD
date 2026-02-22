@@ -98,7 +98,9 @@ volatile unsigned long max_recall_start_time = 0;
 // Persistent storage variables
 uint32_t odometer_miles = 0;
 uint32_t trip_miles = 0;
+uint32_t trip2_miles = 0;
 uint8_t last_screen_mode = 0;
+uint8_t current_trip_display = 1; // 1 or 2, always starts at 1
 bool boot_complete = false; // Flag to track when boot screen is done
 bool restore_mode_pending = false; // Flag to trigger mode restore from main loop
 
@@ -110,6 +112,7 @@ bool restore_mode_pending = false; // Flag to trigger mode restore from main loo
 volatile uint8_t current_speed = 0; // Current speed in MPH
 portMUX_TYPE speed_mutex = portMUX_INITIALIZER_UNLOCKED;
 volatile bool trip_reset_pending = false; // Flag to trigger trip reset from main loop
+volatile bool trip_switch_pending = false; // Flag to trigger trip display switch from main loop
 volatile bool odometer_display_pending = false; // Flag to trigger odometer display update
 
 // Load values from NVS flash
@@ -119,6 +122,7 @@ void load_persistent_data() {
   // Load odometer/trip as hundredths of miles (default: 5862500 = 58,625.00 miles)
   odometer_miles = preferences.getUInt("odometer", 5862500);
   trip_miles = preferences.getUInt("trip", 51000); // Default: 510.00 miles
+  trip2_miles = preferences.getUInt("trip2", 0); // Default: 0.00 miles
   last_screen_mode = preferences.getUChar("screen_mode", 0); // Default: mode 0
   
   // Check if values need migration (old format was whole miles, new is hundredths)
@@ -127,18 +131,20 @@ void load_persistent_data() {
     Serial.println("Migrating old odometer format to hundredths");
     odometer_miles = odometer_miles * 100; // Convert to hundredths
     trip_miles = trip_miles * 100;
+    trip2_miles = trip2_miles * 100;
     preferences.end();
     
     // Save migrated values
     preferences.begin("gauge", false);
     preferences.putUInt("odometer", odometer_miles);
     preferences.putUInt("trip", trip_miles);
+    preferences.putUInt("trip2", trip2_miles);
   }
   
   preferences.end();
   
-  Serial.printf("Loaded from NVS: Odometer=%lu, Trip=%lu, Mode=%d\n", 
-                odometer_miles, trip_miles, last_screen_mode);
+  Serial.printf("Loaded from NVS: Odometer=%lu, Trip1=%lu, Trip2=%lu, Mode=%d\n", 
+                odometer_miles, trip_miles, trip2_miles, last_screen_mode);
 }
 
 // Save values to NVS flash
@@ -147,13 +153,14 @@ void save_persistent_data() {
   
   preferences.putUInt("odometer", odometer_miles);
   preferences.putUInt("trip", trip_miles);
+  preferences.putUInt("trip2", trip2_miles);
   preferences.putUChar("screen_mode", last_screen_mode);
   
   preferences.end();
   
   /*
-  Serial.printf("Saved to NVS: Odometer=%lu, Trip=%lu, Mode=%d\n", 
-                odometer_miles, trip_miles, last_screen_mode);
+  Serial.printf("Saved to NVS: Odometer=%lu, Trip1=%lu, Trip2=%lu, Mode=%d\n", 
+                odometer_miles, trip_miles, trip2_miles, last_screen_mode);
   */
 }
 
@@ -161,6 +168,7 @@ void save_persistent_data() {
 void periodic_save_task(void *arg) {
   static uint32_t last_odometer = 0;
   static uint32_t last_trip = 0;
+  static uint32_t last_trip2 = 0;
   static uint8_t last_mode = 0;
   
   while (1) {
@@ -168,11 +176,13 @@ void periodic_save_task(void *arg) {
     
     // Only save if values have changed
     if (odometer_miles != last_odometer || 
-        trip_miles != last_trip || 
+        trip_miles != last_trip ||
+        trip2_miles != last_trip2 ||
         last_screen_mode != last_mode) {
       save_persistent_data();
       last_odometer = odometer_miles;
-      last_trip = last_trip;
+      last_trip = trip_miles;
+      last_trip2 = trip2_miles;
       last_mode = last_screen_mode;
     }
   }
@@ -181,13 +191,16 @@ void periodic_save_task(void *arg) {
 // Update odometer/trip display labels
 void update_odometer_display() {
   static uint32_t last_displayed_odometer = 0;
-  static uint32_t last_displayed_trip = 0;
+  static uint32_t last_displayed_trip1 = 0;
+  static uint32_t last_displayed_trip2 = 0;
+  static uint8_t last_displayed_trip_num = 0;
   
   // Check if labels exist before updating
   lv_obj_t* odo_label = get_odometer_label();
   lv_obj_t* trip_label = get_trip_label();
+  lv_obj_t* trip_text_label = get_trip_text_label();
   
-  if (odo_label == NULL || trip_label == NULL) {
+  if (odo_label == NULL || trip_label == NULL || trip_text_label == NULL) {
     Serial.println("Warning: Odometer/trip labels not ready yet");
     return;
   }
@@ -201,13 +214,36 @@ void update_odometer_display() {
     last_displayed_odometer = odometer_miles;
   }
   
-  if (trip_miles != last_displayed_trip) {
-    char text[16];
-    // Display as miles with 1 decimal place (stored as hundredths)
-    float miles = trip_miles / 100.0;
-    sprintf(text, "%.1f", miles);
-    lv_label_set_text(trip_label, text);
-    last_displayed_trip = trip_miles;
+  // Check if trip display changed
+  bool trip_changed = (current_trip_display != last_displayed_trip_num);
+  
+  // Update trip text label if trip number changed
+  if (trip_changed) {
+    if (current_trip_display == 1) {
+      lv_label_set_text(trip_text_label, "Trip 1");
+    } else {
+      lv_label_set_text(trip_text_label, "Trip 2");
+    }
+    last_displayed_trip_num = current_trip_display;
+  }
+  
+  // Always update trip value if trip changed, or if the value changed
+  if (current_trip_display == 1) {
+    if (trip_changed || trip_miles != last_displayed_trip1) {
+      char text[16];
+      float miles = trip_miles / 100.0;
+      sprintf(text, "%.1f", miles);
+      lv_label_set_text(trip_label, text);
+      last_displayed_trip1 = trip_miles;
+    }
+  } else {
+    if (trip_changed || trip2_miles != last_displayed_trip2) {
+      char text[16];
+      float miles = trip2_miles / 100.0;
+      sprintf(text, "%.1f", miles);
+      lv_label_set_text(trip_label, text);
+      last_displayed_trip2 = trip2_miles;
+    }
   }
 }
 
@@ -215,10 +251,31 @@ void update_odometer_display() {
 void process_trip_reset() {
   if (trip_reset_pending) {
     trip_reset_pending = false;
-    trip_miles = 0;
+    
+    // Reset only the currently displayed trip
+    if (current_trip_display == 1) {
+      trip_miles = 0;
+      Serial.println("Trip 1 meter reset");
+    } else {
+      trip2_miles = 0;
+      Serial.println("Trip 2 meter reset");
+    }
+    
     update_odometer_display();
     save_persistent_data(); // Save immediately
-    Serial.println("Trip meter reset");
+  }
+}
+
+// Process trip switch flag (called from main loop for LVGL safety)
+void process_trip_switch() {
+  if (trip_switch_pending) {
+    trip_switch_pending = false;
+    
+    // Toggle between trip 1 and trip 2
+    current_trip_display = (current_trip_display == 1) ? 2 : 1;
+    Serial.printf("Switched to Trip %d\n", current_trip_display);
+    
+    update_odometer_display();
   }
 }
 
@@ -277,6 +334,7 @@ void odometer_update_task(void *arg) {
       uint32_t miles_to_add = (uint32_t)(accumulated_distance * 100); // Convert to hundredths
       odometer_miles += miles_to_add;
       trip_miles += miles_to_add;
+      trip2_miles += miles_to_add;
       accumulated_distance -= (miles_to_add / 100.0);
       
       // Trigger display update from main loop (LVGL-safe)
@@ -414,11 +472,6 @@ void receive_can_task(void *arg) {
           if (message.data[1] > max_values.battery_volts_max) max_values.battery_volts_max = message.data[1];
           portEXIT_CRITICAL(&max_values_mutex);
           break;
-        case 0x558:
-          if (message.data[0] == 1) {
-            display_data.screen_change_requested = true;
-          }
-          break;
         case 0x553:
           display_data.left_afr = message.data[0];
           display_data.right_afr = message.data[1];
@@ -481,6 +534,17 @@ void receive_can_task(void *arg) {
           max_values.battery_volts_max = 0;
           portEXIT_CRITICAL(&max_values_mutex);
           Serial.println("Max values reset");
+          break;
+        case 0x558:
+          if (message.data[0] == 1) {
+            display_data.screen_change_requested = true;
+          }
+          break;
+        case 0x559:
+          if (message.data[0] == 1) {
+            // Trip switch requested - set flag for main loop
+            trip_switch_pending = true;
+          }
           break;
       }
       portEXIT_CRITICAL(&display_data_mutex);
@@ -854,6 +918,9 @@ void loop(void) {
   // Check if trip reset was requested
   process_trip_reset();
   
+  // Check if trip switch was requested
+  process_trip_switch();
+  
   // Check TCA9554 P5-P8 input states periodically
   if (now - last_tca_check >= TCA_CHECK_INTERVAL_MS) {
     last_tca_check = now;
@@ -881,6 +948,11 @@ void loop(void) {
         else if (pin == 6) {
           trip_reset_pending = true;
           Serial.println("Trip reset triggered");
+        }
+        // P7 triggers trip switch
+        else if (pin == 7) {
+          trip_switch_pending = true;
+          Serial.println("Trip switch triggered");
         }
       }
     }

@@ -18,6 +18,7 @@ lv_obj_t* get_right_value_label(void);
 lv_obj_t* get_test_label(void);
 lv_obj_t* get_odometer_label(void);
 lv_obj_t* get_trip_label(void);
+lv_obj_t* get_trip_text_label(void);
 uint8_t get_current_screen_mode(void);
 
 // Callback functions

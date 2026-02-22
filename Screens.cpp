@@ -148,13 +148,13 @@ void main_scr_init(void) {
   lv_obj_add_style(odometer_value, &style_label_title, 0);
 
   trip_label = lv_label_create(main_scr);
-  lv_label_set_text_static(trip_label, "Trip");
-  lv_obj_set_pos(trip_label, 35, 702);
+  lv_label_set_text_static(trip_label, "Trip 1");
+  lv_obj_set_pos(trip_label, 35, 682);
   lv_obj_add_style(trip_label, &style_label_title, 0);
 
   trip_value = lv_label_create(main_scr);
   lv_label_set_text(trip_value, "0.0");
-  lv_obj_set_pos(trip_value, 35, 772);
+  lv_obj_set_pos(trip_value, 35, 782);
   lv_obj_add_style(trip_value, &style_label_title, 0);
   
   // Add callback for when main screen is loaded
@@ -216,6 +216,10 @@ lv_obj_t* get_odometer_label(void) {
 
 lv_obj_t* get_trip_label(void) {
   return trip_value;
+}
+
+lv_obj_t* get_trip_text_label(void) {
+  return trip_label;
 }
 
 uint8_t get_current_screen_mode(void) {
