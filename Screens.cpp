@@ -1,21 +1,41 @@
 #include "Screens.h"
 #include "images/AstonLogo.h"
+#include "images/CruiseControl.h"
+#include "images/tcs.h"
+#include "images/flag.h"
+#include "images/ExhaustBypass.h"
+#include "images/TwoStep.h"
+#include "images/PeakRecall.h"
 
 LV_IMG_DECLARE(AstonLogo);
+LV_IMG_DECLARE(CruiseControl);
+LV_IMG_DECLARE(tcs);
+LV_IMG_DECLARE(flag);
+LV_IMG_DECLARE(ExhaustBypass);
+LV_IMG_DECLARE(TwoStep);
+LV_IMG_DECLARE(PeakRecall);
 
 // Single main screen
 lv_obj_t *main_scr = NULL;
 lv_obj_t *boot_scr1 = NULL;
 
-// Test labels - simulating left and right titles
-lv_obj_t *test_label_left = NULL;
-lv_obj_t *test_label_right = NULL;
+// Label objects
+lv_obj_t *left_title_label = NULL;
+lv_obj_t *right_title_label = NULL;
 lv_obj_t *left_label_value = NULL;
 lv_obj_t *right_label_value = NULL;
 lv_obj_t *odometer_label = NULL;
 lv_obj_t *odometer_value = NULL;
 lv_obj_t *trip_label = NULL;
 lv_obj_t *trip_value = NULL;
+
+// Status icons
+lv_obj_t *cruise_control_img = NULL;
+lv_obj_t *tcs_img = NULL;
+lv_obj_t *launch_img = NULL;
+lv_obj_t *exhaust_bypass_img = NULL;
+lv_obj_t *two_step_img = NULL;
+lv_obj_t *peak_recall_img = NULL;
 
 // Reusable style objects
 static lv_style_t style_label_title;
@@ -30,7 +50,6 @@ void init_styles(void) {
   
   // Style for title labels (28pt custom font, white text, rotated)
   lv_style_init(&style_label_title);
-  //lv_style_set_text_font(&style_label_title, &lv_font_montserrat_28);
   lv_style_set_text_font(&style_label_title, &aston_28);
   lv_style_set_text_color(&style_label_title, lv_color_make(255, 255, 255));
   lv_style_set_transform_angle(&style_label_title, 900);
@@ -38,7 +57,6 @@ void init_styles(void) {
   
   // Style for value labels (48pt custom font, white text, rotated)
   lv_style_init(&style_label_value);
-  //lv_style_set_text_font(&style_label_value, &lv_font_montserrat_48);
   lv_style_set_text_font(&style_label_value, &aston_48);
   lv_style_set_text_color(&style_label_value, lv_color_make(255, 255, 255));
   lv_style_set_transform_angle(&style_label_value, 900);
@@ -115,16 +133,46 @@ void main_scr_init(void) {
 
   create_gauge_containers(main_scr);
 
-  // Two test labels - top and bottom titles (adjusted for 240px width)
-  test_label_left = lv_label_create(main_scr);
-  lv_label_set_text(test_label_left, " ");
-  lv_obj_set_pos(test_label_left, 210, 30);
-  lv_obj_add_style(test_label_left, &style_label_title, 0);
+  // Title labels for left and right gauges
+  left_title_label = lv_label_create(main_scr);
+  lv_label_set_text(left_title_label, " ");
+  lv_obj_set_pos(left_title_label, 210, 30);
+  lv_obj_add_style(left_title_label, &style_label_title, 0);
 
-  test_label_right = lv_label_create(main_scr);
-  lv_label_set_text(test_label_right, " ");
-  lv_obj_set_pos(test_label_right, 210, 612);
-  lv_obj_add_style(test_label_right, &style_label_title, 0);
+  right_title_label = lv_label_create(main_scr);
+  lv_label_set_text(right_title_label, " ");
+  lv_obj_set_pos(right_title_label, 210, 612);
+  lv_obj_add_style(right_title_label, &style_label_title, 0);
+
+  //Cruise Control Status Icon
+  cruise_control_img = lv_image_create(main_scr);
+  lv_image_set_src(cruise_control_img, &CruiseControl);
+  lv_obj_set_pos(cruise_control_img, 175, 870);
+
+  //Traction Control Status Icon
+  tcs_img = lv_image_create(main_scr);
+  lv_image_set_src(tcs_img, &tcs);
+  lv_obj_set_pos(tcs_img, 175, 820);
+
+  //Launch Control Status Icon
+  launch_img = lv_image_create(main_scr);
+  lv_image_set_src(launch_img, &flag);
+  lv_obj_set_pos(launch_img, 175, 762);
+
+  //Two Step Status Icon
+  two_step_img = lv_image_create(main_scr);
+  lv_image_set_src(two_step_img, &TwoStep);
+  lv_obj_set_pos(two_step_img, 170, 282);
+
+  //Exhaust Bypass Status Icon
+  exhaust_bypass_img = lv_image_create(main_scr);
+  lv_image_set_src(exhaust_bypass_img, &ExhaustBypass);
+  lv_obj_set_pos(exhaust_bypass_img, 175, 234);
+
+  //Peak Recall Status Icon
+  peak_recall_img = lv_image_create(main_scr);
+  lv_image_set_src(peak_recall_img, &PeakRecall);
+  lv_obj_set_pos(peak_recall_img, 180, 182);
 
   // Value labels (adjusted for 240px width)
   left_label_value = lv_label_create(main_scr);
@@ -161,30 +209,30 @@ void main_scr_init(void) {
   lv_obj_add_event_cb(main_scr, main_scr_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 }
 
-// Test function - cycle through 5 modes with ABBREVIATED text
+// Update screen mode labels and reset values
 void update_screen_labels(uint8_t mode) {
   current_screen_mode = mode;
   
   switch (mode) {
     case 0:
-      lv_label_set_text(test_label_left, "ECT °F");
-      lv_label_set_text(test_label_right, "Oil PSI");
+      lv_label_set_text(left_title_label, "ECT °F");
+      lv_label_set_text(right_title_label, "Oil PSI");
       break;
     case 1:
-      lv_label_set_text(test_label_left, "Left AFR");
-      lv_label_set_text(test_label_right, "Right AFR");
+      lv_label_set_text(left_title_label, "Left AFR");
+      lv_label_set_text(right_title_label, "Right AFR");
       break;
     case 2:
-      lv_label_set_text(test_label_left, "MAP");
-      lv_label_set_text(test_label_right, "Speed");
+      lv_label_set_text(left_title_label, "MAP");
+      lv_label_set_text(right_title_label, "Speed");
       break;
     case 3:
-      lv_label_set_text(test_label_left, "LS Fuel PSI");
-      lv_label_set_text(test_label_right, "DI Fuel PSI");
+      lv_label_set_text(left_title_label, "LS Fuel PSI");
+      lv_label_set_text(right_title_label, "DI Fuel PSI");
       break;
     case 4:
-      lv_label_set_text(test_label_left, "Ethanol %");
-      lv_label_set_text(test_label_right, "Battery V");
+      lv_label_set_text(left_title_label, "Ethanol %");
+      lv_label_set_text(right_title_label, "Battery V");
       break;
   }
   
@@ -206,8 +254,8 @@ lv_obj_t* get_right_value_label(void) {
   return right_label_value;
 }
 
-lv_obj_t* get_test_label(void) {
-  return test_label_left;
+lv_obj_t* get_left_title_label(void) {
+  return left_title_label;
 }
 
 lv_obj_t* get_odometer_label(void) {
@@ -220,6 +268,30 @@ lv_obj_t* get_trip_label(void) {
 
 lv_obj_t* get_trip_text_label(void) {
   return trip_label;
+}
+
+lv_obj_t* get_cruise_icon(void) {
+  return cruise_control_img;
+}
+
+lv_obj_t* get_tcs_icon(void) {
+  return tcs_img;
+}
+
+lv_obj_t* get_launch_icon(void) {
+  return launch_img;
+}
+
+lv_obj_t* get_two_step_icon(void) {
+  return two_step_img;
+}
+
+lv_obj_t* get_exhaust_bypass_icon(void) {
+  return exhaust_bypass_img;
+}
+
+lv_obj_t* get_peak_recall_icon(void) {
+  return peak_recall_img;
 }
 
 uint8_t get_current_screen_mode(void) {

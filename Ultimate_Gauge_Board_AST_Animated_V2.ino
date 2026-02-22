@@ -35,6 +35,20 @@ volatile uint8_t tca_inputs_last_state = 0xFF;  // Assume all pulled high initia
 unsigned long last_tca_check = 0;
 #define TCA_CHECK_INTERVAL_MS 50  // Check every 50ms
 
+// Status Icon Control
+volatile bool cruise_active = false;
+volatile bool tcs_active = false;
+volatile bool launch_active = false;
+volatile bool two_step_active = false;
+volatile bool exhaust_bypass_active = false;
+volatile unsigned long last_cruise_time = 0;
+volatile unsigned long last_tcs_time = 0;
+volatile unsigned long last_launch_time = 0;
+volatile unsigned long last_two_step_time = 0;
+volatile unsigned long last_exhaust_bypass_time = 0;
+volatile bool icons_startup_shown = false;
+#define ICON_TIMEOUT_MS 500  // Hide icons after 500ms of no CAN data
+
 // ============================================================================
 // CAN DATA STRUCTURES
 // ============================================================================
@@ -67,7 +81,7 @@ typedef struct {
 volatile DisplayData display_data = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, false, false, false, false, false, false, 0, 0, 0, 0, 0};
 portMUX_TYPE display_data_mutex = portMUX_INITIALIZER_UNLOCKED;
 
-#define CAN_DATA_TIMEOUT_MS 5000 // Reset values after 5 seconds of no updates
+#define CAN_DATA_TIMEOUT_MS 500 // Reset values after 500ms of no updates
 
 // Max value tracking
 typedef struct {
@@ -293,6 +307,11 @@ void restore_screen_mode_task(void *arg) {
   // Wait a bit more for main screen to fully load, then trigger odometer display update
   vTaskDelay(pdMS_TO_TICKS(200));
   odometer_display_pending = true;
+  
+  // Show icons for 2 seconds on startup
+  icons_startup_shown = true;
+  vTaskDelay(pdMS_TO_TICKS(2000));
+  icons_startup_shown = false;
   
   // Task is done, delete itself
   vTaskDelete(NULL);
@@ -520,20 +539,37 @@ void receive_can_task(void *arg) {
           Serial.println("Max recall activated");
           break;
         case 0x557:
-          // Reset max values
+          // Reset max values for currently displayed screen mode only
           portENTER_CRITICAL(&max_values_mutex);
-          max_values.water_temp_max = 40; // Set to 40 so it displays as 0 after -40 offset
-          max_values.oil_press_max = 0;
-          max_values.left_afr_max = 0;
-          max_values.right_afr_max = 0;
-          max_values.map_press_max = 0;
-          max_values.speed_max = 0;
-          max_values.ls_fuel_press_max = 0;
-          max_values.hs_fuel_press_max = 0;
-          max_values.ethanol_pct_max = 0;
-          max_values.battery_volts_max = 0;
+          uint8_t current_mode = get_current_screen_mode();
+          switch (current_mode) {
+            case 0: // Temp/Oil
+              max_values.water_temp_max = 40; // Set to 40 so it displays as 0 after -40 offset
+              max_values.oil_press_max = 0;
+              Serial.println("Max values reset: Temp/Oil");
+              break;
+            case 1: // AFR
+              max_values.left_afr_max = 0;
+              max_values.right_afr_max = 0;
+              Serial.println("Max values reset: AFR");
+              break;
+            case 2: // MAP/Speed
+              max_values.map_press_max = 0;
+              max_values.speed_max = 0;
+              Serial.println("Max values reset: MAP/Speed");
+              break;
+            case 3: // Fuel
+              max_values.ls_fuel_press_max = 0;
+              max_values.hs_fuel_press_max = 0;
+              Serial.println("Max values reset: Fuel");
+              break;
+            case 4: // Ethanol/Battery
+              max_values.ethanol_pct_max = 0;
+              max_values.battery_volts_max = 0;
+              Serial.println("Max values reset: Ethanol/Battery");
+              break;
+          }
           portEXIT_CRITICAL(&max_values_mutex);
-          Serial.println("Max values reset");
           break;
         case 0x558:
           if (message.data[0] == 1) {
@@ -544,6 +580,29 @@ void receive_can_task(void *arg) {
           if (message.data[0] == 1) {
             // Trip switch requested - set flag for main loop
             trip_switch_pending = true;
+          }
+          break;
+        case 0x560:
+          // Status icons control
+          if (message.data[0] == 1) {
+            cruise_active = true;
+            last_cruise_time = millis();
+          }
+          if (message.data[1] == 1) {
+            tcs_active = true;
+            last_tcs_time = millis();
+          }
+          if (message.data[2] == 1) {
+            launch_active = true;
+            last_launch_time = millis();
+          }
+          if (message.data[3] == 1) {
+            two_step_active = true;
+            last_two_step_time = millis();
+          }
+          if (message.data[4] == 1) {
+            exhaust_bypass_active = true;
+            last_exhaust_bypass_time = millis();
           }
           break;
       }
@@ -895,6 +954,73 @@ void setup(void) {
   Serial.println("Setup complete");
 }
 
+// Update status icon visibility
+void update_status_icons() {
+  unsigned long now = millis();
+  
+  lv_obj_t* cruise_icon = get_cruise_icon();
+  lv_obj_t* tcs_icon = get_tcs_icon();
+  lv_obj_t* launch_icon = get_launch_icon();
+  lv_obj_t* two_step_icon = get_two_step_icon();
+  lv_obj_t* exhaust_bypass_icon = get_exhaust_bypass_icon();
+  lv_obj_t* peak_recall_icon = get_peak_recall_icon();
+  
+  if (cruise_icon == NULL || tcs_icon == NULL || launch_icon == NULL || 
+      two_step_icon == NULL || exhaust_bypass_icon == NULL || peak_recall_icon == NULL) {
+    return; // Icons not ready yet
+  }
+  
+  // Show icons during startup period or when active
+  bool show_cruise = icons_startup_shown || (cruise_active && (now - last_cruise_time < ICON_TIMEOUT_MS));
+  bool show_tcs = icons_startup_shown || (tcs_active && (now - last_tcs_time < ICON_TIMEOUT_MS));
+  bool show_launch = icons_startup_shown || (launch_active && (now - last_launch_time < ICON_TIMEOUT_MS));
+  bool show_two_step = icons_startup_shown || (two_step_active && (now - last_two_step_time < ICON_TIMEOUT_MS));
+  bool show_exhaust_bypass = icons_startup_shown || (exhaust_bypass_active && (now - last_exhaust_bypass_time < ICON_TIMEOUT_MS));
+  bool show_peak_recall = icons_startup_shown || max_recall_active; // Show on startup or when max recall is active
+  
+  // Update visibility
+  if (show_cruise) {
+    lv_obj_clear_flag(cruise_icon, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_add_flag(cruise_icon, LV_OBJ_FLAG_HIDDEN);
+    cruise_active = false; // Reset state after timeout
+  }
+  
+  if (show_tcs) {
+    lv_obj_clear_flag(tcs_icon, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_add_flag(tcs_icon, LV_OBJ_FLAG_HIDDEN);
+    tcs_active = false;
+  }
+  
+  if (show_launch) {
+    lv_obj_clear_flag(launch_icon, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_add_flag(launch_icon, LV_OBJ_FLAG_HIDDEN);
+    launch_active = false;
+  }
+  
+  if (show_two_step) {
+    lv_obj_clear_flag(two_step_icon, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_add_flag(two_step_icon, LV_OBJ_FLAG_HIDDEN);
+    two_step_active = false;
+  }
+  
+  if (show_exhaust_bypass) {
+    lv_obj_clear_flag(exhaust_bypass_icon, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_add_flag(exhaust_bypass_icon, LV_OBJ_FLAG_HIDDEN);
+    exhaust_bypass_active = false;
+  }
+  
+  if (show_peak_recall) {
+    lv_obj_clear_flag(peak_recall_icon, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_add_flag(peak_recall_icon, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
 void loop(void) {
   static unsigned long last_lvgl_time = 0;
   const unsigned long LVGL_INTERVAL_MS = 16; // Run LVGL at ~60Hz
@@ -965,6 +1091,9 @@ void loop(void) {
     lv_timer_handler();
     last_lvgl_time = now;
   }
+  
+  // Update status icon visibility
+  update_status_icons();
   
   // Update data values
   update_display_from_can_data();

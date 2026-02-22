@@ -5,10 +5,11 @@ A high-performance automotive gauge display system built on ESP32 with LVGL grap
 ## Features
 
 - **Multi-Screen Display**: 5 configurable screens showing different vehicle parameters
+- **Status Icons**: Visual indicators for cruise control, traction control, launch control, 2-step, exhaust bypass, and peak recall
 - **Dual Trip Meters**: Two independent trip meters with separate tracking and reset
 - **Physical Button Controls**: TCA9554 GPIO inputs for screen change, trip reset, and trip switch
 - **CAN Bus Integration**: Real-time data from vehicle CAN network (500kbps)
-- **Max Value Recall**: Track and display maximum values for all sensors
+- **Max Value Recall**: Track and display maximum values for all sensors (per-screen reset)
 - **Persistent Storage**: Odometer and trip values saved to NVS flash
 - **Thread-Safe Architecture**: FreeRTOS tasks for reliable concurrent operation
 - **Smooth Animations**: 60Hz refresh rate with optimized LVGL rendering
@@ -69,6 +70,21 @@ All screens display odometer and trip meter values at the bottom.
 - **Persistent Storage**: Both trip values saved to NVS flash every 10 seconds
 - **Switch Control**: Toggle between Trip 1 and Trip 2 via P7 button or CAN 0x559
 
+## Status Icons
+
+Six status icons display on the right side of the screen:
+
+| Icon | Trigger | Display Behavior |
+|------|---------|------------------|
+| Cruise Control | CAN 0x560 B0=1 | Shows for 2s on startup, or while CAN active (500ms timeout) |
+| Traction Control | CAN 0x560 B1=1 | Shows for 2s on startup, or while CAN active (500ms timeout) |
+| Launch Control | CAN 0x560 B2=1 | Shows for 2s on startup, or while CAN active (500ms timeout) |
+| 2-Step | CAN 0x560 B3=1 | Shows for 2s on startup, or while CAN active (500ms timeout) |
+| Exhaust Bypass | CAN 0x560 B4=1 | Shows for 2s on startup, or while CAN active (500ms timeout) |
+| Peak Recall | CAN 0x556 active | Shows for 2s on startup, or during max recall mode |
+
+All icons (except Peak Recall) hide 500ms after last CAN message received.
+
 ## CAN Message IDs
 
 | ID    | Description | Data Bytes |
@@ -80,9 +96,10 @@ All screens display odometer and trip meter values at the bottom.
 | 0x554 | Pressure & speed data | B0: MAP, B1: Speed (MPH) |
 | 0x555 | Fuel pressure | B0: Low side, B1: High side |
 | 0x556 | Max value recall | Display max values for 2 seconds |
-| 0x557 | Reset max values | Clear all stored maximum values |
+| 0x557 | Reset max values | Clear max values for currently displayed screen only |
 | 0x558 | Screen change | B0: 1 = cycle through screens |
 | 0x559 | Trip switch | B0: 1 = toggle between Trip 1 and Trip 2 |
+| 0x560 | Status icons | B0: Cruise, B1: TCS, B2: Launch, B3: 2-Step, B4: Exhaust Bypass |
 
 **Note**: All CAN controls have physical button equivalents on TCA9554 P5-P7
 
@@ -139,6 +156,12 @@ pio run -t upload
 ├── Screens.cpp/h                              # UI screen definitions
 └── images/                                    # Image assets
     ├── AstonLogo.h
+    ├── CruiseControl.h
+    ├── tcs.h
+    ├── flag.h
+    ├── TwoStep.h
+    ├── ExhaustBypass.h
+    ├── PeakRecall.h
     ├── MotecLogo.h
     └── jake.h
 ```
@@ -158,10 +181,11 @@ pio run -t upload
 - Automatic CAN bus error recovery
 - Queue overflow detection and handling
 - Watchdog monitoring for system freezes
-- 5-second timeout resets values to 0 when no CAN data received
+- 500ms timeout resets values to 0 when no CAN data received
 - Thread-safe data access with mutexes
 - Debounced button inputs (50ms polling with edge detection)
 - Persistent storage prevents data loss on power cycle
+- Per-screen max value reset prevents accidental data loss
 
 ## Customization
 

@@ -15,10 +15,16 @@ void init_styles(void);
 void update_screen_labels(uint8_t mode);
 lv_obj_t* get_left_value_label(void);
 lv_obj_t* get_right_value_label(void);
-lv_obj_t* get_test_label(void);
+lv_obj_t* get_left_title_label(void);
 lv_obj_t* get_odometer_label(void);
 lv_obj_t* get_trip_label(void);
 lv_obj_t* get_trip_text_label(void);
+lv_obj_t* get_cruise_icon(void);
+lv_obj_t* get_tcs_icon(void);
+lv_obj_t* get_launch_icon(void);
+lv_obj_t* get_two_step_icon(void);
+lv_obj_t* get_exhaust_bypass_icon(void);
+lv_obj_t* get_peak_recall_icon(void);
 uint8_t get_current_screen_mode(void);
 
 // Callback functions
