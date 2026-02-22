@@ -44,18 +44,22 @@ typedef struct {
   uint8_t speed;
   uint8_t ls_fuel_press;
   uint8_t hs_fuel_press;
+  uint8_t ethanol_pct;
+  uint8_t battery_volts;
   bool updated_0x551;
+  bool updated_0x552;
   bool updated_0x553;
   bool updated_0x554;
   bool updated_0x555;
   bool screen_change_requested;
   unsigned long last_update_0x551;
+  unsigned long last_update_0x552;
   unsigned long last_update_0x553;
   unsigned long last_update_0x554;
   unsigned long last_update_0x555;
 } DisplayData;
 
-volatile DisplayData display_data = {0, 0, 0, 0, 0, 0, 0, 0, false, false, false, false, false, 0, 0, 0, 0};
+volatile DisplayData display_data = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, false, false, false, false, false, false, 0, 0, 0, 0, 0};
 portMUX_TYPE display_data_mutex = portMUX_INITIALIZER_UNLOCKED;
 
 #define CAN_DATA_TIMEOUT_MS 5000 // Reset values after 5 seconds of no updates
@@ -70,9 +74,11 @@ typedef struct {
   uint8_t speed_max;
   uint8_t ls_fuel_press_max;
   uint8_t hs_fuel_press_max;
+  uint8_t ethanol_pct_max;
+  uint8_t battery_volts_max;
 } MaxValues;
 
-volatile MaxValues max_values = {0, 0, 0, 0, 0, 0, 0, 0};
+volatile MaxValues max_values = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 portMUX_TYPE max_values_mutex = portMUX_INITIALIZER_UNLOCKED;
 
 // Max recall state
@@ -387,6 +393,18 @@ void receive_can_task(void *arg) {
           portEXIT_CRITICAL(&max_values_mutex);
           break;
         case 0x552:
+          display_data.ethanol_pct = message.data[0];
+          display_data.battery_volts = message.data[1];
+          display_data.updated_0x552 = true;
+          display_data.last_update_0x552 = millis();
+          
+          // Update max values
+          portENTER_CRITICAL(&max_values_mutex);
+          if (message.data[0] > max_values.ethanol_pct_max) max_values.ethanol_pct_max = message.data[0];
+          if (message.data[1] > max_values.battery_volts_max) max_values.battery_volts_max = message.data[1];
+          portEXIT_CRITICAL(&max_values_mutex);
+          break;
+        case 0x558:
           if (message.data[0] == 1) {
             display_data.screen_change_requested = true;
           }
@@ -449,6 +467,8 @@ void receive_can_task(void *arg) {
           max_values.speed_max = 0;
           max_values.ls_fuel_press_max = 0;
           max_values.hs_fuel_press_max = 0;
+          max_values.ethanol_pct_max = 0;
+          max_values.battery_volts_max = 0;
           portEXIT_CRITICAL(&max_values_mutex);
           Serial.println("Max values reset");
           break;
@@ -564,6 +584,7 @@ void update_display_values(uint8_t mode, uint8_t left_val, uint8_t right_val) {
       
     case 2: // MAP and Speed
     case 3: // Fuel
+    case 4: // Ethanol and Battery
       left_processed = left_val;
       right_processed = right_val;
       break;
@@ -624,7 +645,7 @@ void update_display_from_can_data(void) {
   
   // Cycle through modes - EXACTLY like the real implementation
   if (mode_change_requested) {
-    uint8_t new_mode = (get_current_screen_mode() + 1) % 4;
+    uint8_t new_mode = (get_current_screen_mode() + 1) % 5;
     update_screen_labels(new_mode);
     last_screen_mode = new_mode; // Save for persistence
     Serial.printf("Changed to mode %d\n", new_mode);
@@ -649,6 +670,11 @@ void update_display_from_can_data(void) {
     display_data.water_temp = 40; // Set to 40 so it displays as 0 after -40 offset
     display_data.oil_press = 0;
     display_data.updated_0x551 = true; // Force update to show 0
+  }
+  if (now_time - display_data.last_update_0x552 > CAN_DATA_TIMEOUT_MS && display_data.last_update_0x552 > 0) {
+    display_data.ethanol_pct = 0;
+    display_data.battery_volts = 0;
+    display_data.updated_0x552 = true;
   }
   if (now_time - display_data.last_update_0x553 > CAN_DATA_TIMEOUT_MS && display_data.last_update_0x553 > 0) {
     display_data.left_afr = 0;
@@ -729,6 +755,21 @@ void update_display_from_can_data(void) {
           right_val = display_data.hs_fuel_press;
         }
         display_data.updated_0x555 = false;
+        has_update = true;
+      }
+      break;
+    case 4:
+      if (display_data.updated_0x552 || max_recall_active) {
+        if (max_recall_active) {
+          portENTER_CRITICAL(&max_values_mutex);
+          left_val = max_values.ethanol_pct_max;
+          right_val = max_values.battery_volts_max;
+          portEXIT_CRITICAL(&max_values_mutex);
+        } else {
+          left_val = display_data.ethanol_pct;
+          right_val = display_data.battery_volts;
+        }
+        display_data.updated_0x552 = false;
         has_update = true;
       }
       break;

@@ -23,7 +23,7 @@ static lv_style_t style_label_value;
 static bool styles_initialized = false;
 
 // Current screen mode
-static uint8_t current_screen_mode = 0; // 0=temp/oil, 1=AFR, 2=pressures, 3=fuel
+static uint8_t current_screen_mode = 0; // 0=temp/oil, 1=AFR, 2=pressures, 3=fuel, 4=ethanol/battery
 
 void init_styles(void) {
   if (styles_initialized) return;
@@ -159,7 +159,7 @@ void main_scr_init(void) {
   lv_obj_add_event_cb(main_scr, main_scr_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 }
 
-// Test function - cycle through 4 modes with ABBREVIATED text
+// Test function - cycle through 5 modes with ABBREVIATED text
 void update_screen_labels(uint8_t mode) {
   current_screen_mode = mode;
   
@@ -179,6 +179,10 @@ void update_screen_labels(uint8_t mode) {
     case 3:
       lv_label_set_text(test_label_left, "LS Fuel PSI");
       lv_label_set_text(test_label_right, "DI Fuel PSI");
+      break;
+    case 4:
+      lv_label_set_text(test_label_left, "Ethanol %");
+      lv_label_set_text(test_label_right, "Battery V");
       break;
   }
   

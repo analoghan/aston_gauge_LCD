@@ -37,18 +37,23 @@ A high-performance automotive gauge display system built on ESP32 with LVGL grap
 - Low Side Fuel Pressure
 - Direct Injection Fuel Pressure
 
+### Screen 5: Fuel & Electrical
+- Ethanol Percentage (%)
+- Battery Voltage (V)
+
 ## CAN Message IDs
 
 | ID    | Description | Data Bytes |
 |-------|-------------|------------|
 | 0x550 | Trip meter control | B0: 1 = reset trip meter |
 | 0x551 | Engine temps/pressure | B0: Coolant temp, B1: Oil pressure |
-| 0x552 | Screen change trigger | B0: 1 = cycle screens |
+| 0x552 | Fuel & electrical | B0: Ethanol %, B1: Battery volts |
 | 0x553 | AFR data | B0: Left AFR, B1: Right AFR |
 | 0x554 | Pressure & speed data | B0: MAP, B1: Speed (MPH) |
 | 0x555 | Fuel pressure | B0: Low side, B1: High side |
 | 0x556 | Max value recall | Display max values for 2 seconds |
 | 0x557 | Reset max values | Clear all stored maximum values |
+| 0x558 | Screen change trigger | B0: 1 = cycle screens |
 
 ## Architecture
 
