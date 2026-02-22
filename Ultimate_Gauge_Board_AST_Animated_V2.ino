@@ -30,6 +30,11 @@ unsigned long last_loop_time = 0;
 #define CAN_TIMEOUT_MS 5000
 #define LOOP_TIMEOUT_MS 1000
 
+// TCA9554 P5-P8 Input Monitoring
+volatile uint8_t tca_inputs_last_state = 0xFF;  // Assume all pulled high initially
+unsigned long last_tca_check = 0;
+#define TCA_CHECK_INTERVAL_MS 50  // Check every 50ms
+
 // ============================================================================
 // CAN DATA STRUCTURES
 // ============================================================================
@@ -146,8 +151,10 @@ void save_persistent_data() {
   
   preferences.end();
   
+  /*
   Serial.printf("Saved to NVS: Odometer=%lu, Trip=%lu, Mode=%d\n", 
                 odometer_miles, trip_miles, last_screen_mode);
+  */
 }
 
 // Periodic save task - saves every 10 seconds if values changed
@@ -297,7 +304,10 @@ void drivers_init(void) {
   if (!found) {
     Serial.println("TCA9554 not detected! Skipping expander init.");
   } else {
-    tca9554pwr_init(0x00);
+    // Initialize TCA9554 with P5-P8 as inputs (bits 4-7 = 1), others as output (0)
+    // Binary: 1111 0000 = 0xF0
+    tca9554pwr_init(0xF0);
+    Serial.println("TCA9554 initialized with P5-P8 as inputs");
   }
   lcd_init();
   lvgl_init();
@@ -843,6 +853,40 @@ void loop(void) {
   
   // Check if trip reset was requested
   process_trip_reset();
+  
+  // Check TCA9554 P5-P8 input states periodically
+  if (now - last_tca_check >= TCA_CHECK_INTERVAL_MS) {
+    last_tca_check = now;
+    uint8_t current_state = read_exios(TCA9554_INPUT_REG);
+    
+    // Check each pin (P5-P8) for falling edge (high to low transition = pulled to ground)
+    // P5 = bit 4, P6 = bit 5, P7 = bit 6, P8 = bit 7
+    for (int pin = 5; pin <= 8; pin++) {
+      uint8_t bit_mask = (1 << (pin - 1));
+      bool last_state = (tca_inputs_last_state & bit_mask) != 0;
+      bool curr_state = (current_state & bit_mask) != 0;
+      
+      // Detect falling edge
+      if (last_state && !curr_state) {
+        Serial.printf("TCA9554 P%d triggered - pulled to ground!\n", pin);
+        
+        // P5 triggers screen change
+        if (pin == 5) {
+          uint8_t new_mode = (get_current_screen_mode() + 1) % 5;
+          update_screen_labels(new_mode);
+          last_screen_mode = new_mode;
+          Serial.printf("Screen changed to mode %d\n", new_mode);
+        }
+        // P6 triggers trip reset
+        else if (pin == 6) {
+          trip_reset_pending = true;
+          Serial.println("Trip reset triggered");
+        }
+      }
+    }
+    
+    tca_inputs_last_state = current_state;
+  }
   
   // Run LVGL timer handler at consistent intervals
   if (now - last_lvgl_time >= LVGL_INTERVAL_MS) {
