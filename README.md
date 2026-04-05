@@ -88,21 +88,31 @@ All icons (except Peak Recall variants) hide 500ms after last CAN message receiv
 
 ## CAN Message IDs
 
+### M1 ECU Input Messages (read by gauge)
+
+| ID (hex) | ID (dec) | DBC Name | Signals Used | Scaling |
+|----------|----------|----------|--------------|---------|
+| 0x640 | 1600 | M1_General_0x640 | Inlet_Manifold_Pressure (B2-3) | ×0.1 kPa → PSI |
+| 0x641 | 1601 | M1_General_0x641 | Fuel_Pressure_Sensor (B4-5) | ×0.1 kPa → PSI |
+| 0x644 | 1604 | M1_General_0x644 | Engine_Oil_Pressure (B4-5) | ×0.1 kPa → PSI |
+| 0x649 | 1609 | M1_General_0x649 | Coolant_Temperature (B0), ECU_Battery_Voltage (B5) | ×1 -40°C→°F, ×0.1 V |
+| 0x651 | 1617 | M1_General_0x651 | Exhaust_Lambda_Bank_1 (B2), Exhaust_Lambda_Bank_2 (B3) | ×0.01 LA → ×14.7 AFR |
+| 0x653 | 1619 | M1_General_0x653 | Fuel_Pressure_Direct_B1 (B0-1) | ×1 kPa → PSI |
+| 0x659 | 1625 | M1_General_0x659 | Vehicle_Speed (B4-5) | ×0.1 km/h → MPH |
+| 0x670 | 1648 | M1_Flex_Fuel_0x670 | Fuel_Composition (B5) | ×1 % |
+
+### Gauge Control Messages (custom)
+
 | ID    | Description | Data Bytes |
 |-------|-------------|------------|
 | 0x550 | Trip meter reset | B0: 1 = reset currently displayed trip |
-| 0x551 | Engine temps/pressure | B0: Coolant temp (+40°F offset), B1: Oil pressure |
-| 0x552 | Fuel & electrical | B0: Ethanol %, B1: Battery volts |
-| 0x553 | AFR data | B0: Left AFR, B1: Right AFR |
-| 0x554 | Pressure & speed data | B0: MAP, B1: Speed (MPH) |
-| 0x555 | Fuel pressure | B0: Low side, B1: High side |
 | 0x556 | Max value recall | Display max values for 2 seconds |
 | 0x557 | Reset max values | Clear max values for currently displayed screen only |
 | 0x558 | Screen change | B0: 1 = cycle through screens |
 | 0x559 | Trip switch | B0: 1 = toggle between Trip 1 and Trip 2 |
 | 0x560 | Status icons | B0: Cruise, B1: TCS, B2: Launch, B3: 2-Step, B4: Exhaust Bypass |
 
-**Note**: All CAN controls have physical button equivalents on TCA9554 P5-P7
+**Note**: All gauge control messages have physical button equivalents on TCA9554 P5-P7
 
 ## Architecture
 

@@ -222,12 +222,12 @@ void update_screen_labels(uint8_t mode) {
       lv_label_set_text(right_title_label, "Oil PSI");
       break;
     case 1:
-      lv_label_set_text(left_title_label, "Left AFR");
-      lv_label_set_text(right_title_label, "Right AFR");
+      lv_label_set_text(left_title_label, "AFR B1");
+      lv_label_set_text(right_title_label, "AFR B2");
       break;
     case 2:
-      lv_label_set_text(left_title_label, "MAP");
-      lv_label_set_text(right_title_label, "Speed");
+      lv_label_set_text(left_title_label, "MAP PSI");
+      lv_label_set_text(right_title_label, "Speed MPH");
       break;
     case 3:
       lv_label_set_text(left_title_label, "LS Fuel PSI");
