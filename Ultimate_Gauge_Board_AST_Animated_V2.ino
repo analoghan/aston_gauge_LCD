@@ -95,7 +95,7 @@ typedef struct {
 } DisplayData;
 
 volatile DisplayData display_data = {};
-portMUX_TYPE display_data_mutex = portMUX_INITIALIZER_UNLOCKED;
+SemaphoreHandle_t display_data_mutex = NULL;
 
 #define CAN_DATA_TIMEOUT_MS 500 // Reset values after 500ms of no updates
 
@@ -474,12 +474,13 @@ void receive_can_task(void *arg) {
       last_can_message_time = millis();
       unsigned long now_msg = millis(); // Capture time once, outside any critical section
       
-      portENTER_CRITICAL(&display_data_mutex);
+      xSemaphoreTake(display_data_mutex, portMAX_DELAY);
       switch (message.identifier) {
         // ---- M1 ECU native messages ----
 
         case 0x640: {
-          uint16_t map_raw = ((uint16_t)message.data[0] << 8) | message.data[1];
+          // Inlet_Manifold_Pressure: bit 23|16@0+ = B2-B3
+          uint16_t map_raw = ((uint16_t)message.data[2] << 8) | message.data[3];
           display_data.map_raw = map_raw;
           display_data.updated_0x640 = true;
           display_data.last_update_0x640 = now_msg;
@@ -488,6 +489,7 @@ void receive_can_task(void *arg) {
         }
 
         case 0x641: {
+          // Fuel_Pressure_Sensor: bit 39|16@0+ = B4-B5, x0.1 kPa
           uint16_t ls_raw = ((uint16_t)message.data[4] << 8) | message.data[5];
           display_data.ls_fuel_press_raw = ls_raw;
           display_data.updated_0x641 = true;
@@ -497,7 +499,8 @@ void receive_can_task(void *arg) {
         }
 
         case 0x644: {
-          uint16_t op_raw = ((uint16_t)message.data[4] << 8) | message.data[5];
+          // Engine_Oil_Pressure: bit 55|16@0+ = B6-B7, x0.1 kPa
+          uint16_t op_raw = ((uint16_t)message.data[6] << 8) | message.data[7];
           display_data.oil_press_raw = op_raw;
           display_data.updated_0x644 = true;
           display_data.last_update_0x644 = now_msg;
@@ -526,7 +529,10 @@ void receive_can_task(void *arg) {
         }
 
         case 0x653: {
+          // Fuel_Pressure_Direct_B1: bit 7|16@0+ = B0-B1, x1 kPa
+          // Guard against 0xFFFF (invalid/not populated)
           uint16_t di_raw = ((uint16_t)message.data[0] << 8) | message.data[1];
+          if (di_raw == 0xFFFF) di_raw = 0;
           display_data.di_fuel_press_raw = di_raw;
           display_data.updated_0x653 = true;
           display_data.last_update_0x653 = now_msg;
@@ -620,7 +626,7 @@ void receive_can_task(void *arg) {
           break;
         }
       }
-      portEXIT_CRITICAL(&display_data_mutex);
+      xSemaphoreGive(display_data_mutex);
 
       // Update current_speed outside the critical section (avoids nested lock with speed_mutex)
       if (message.identifier == 0x659) {
@@ -724,7 +730,12 @@ void update_display_values(uint8_t mode, float left_val, float right_val) {
   // Update left label
   if (left_val != last_left) {
     char text[10];
-    format_float_value(text, left_val);
+    // Integer display for ECT, LS Fuel PSI, Ethanol %
+    if (mode == 0 || mode == 3 || mode == 4) {
+      format_value_with_padding(text, (int)left_val);
+    } else {
+      format_float_value(text, left_val);
+    }
     lv_label_set_text(left_label, text);
     last_left = left_val;
   }
@@ -736,7 +747,12 @@ void update_display_values(uint8_t mode, float left_val, float right_val) {
   // Update right label
   if (right_val != last_right) {
     char text[10];
-    format_float_value(text, right_val);
+    // Integer display for Oil PSI, Speed, DI Fuel PSI
+    if (mode == 0 || mode == 2 || mode == 3) {
+      format_value_with_padding(text, (int)right_val);
+    } else {
+      format_float_value(text, right_val);
+    }
     lv_label_set_text(right_label, text);
     last_right = right_val;
   }
@@ -764,7 +780,7 @@ void update_display_from_can_data(void) {
   uint8_t mode = get_current_screen_mode();
 
   // --- Snapshot display_data under mutex, no nested locks ---
-  portENTER_CRITICAL(&display_data_mutex);
+  xSemaphoreTake(display_data_mutex, portMAX_DELAY);
 
   // Timeout checks
   if (display_data.last_update_0x649 > 0 && now - display_data.last_update_0x649 > CAN_DATA_TIMEOUT_MS) {
@@ -851,7 +867,7 @@ void update_display_from_can_data(void) {
       break;
   }
 
-  portEXIT_CRITICAL(&display_data_mutex);
+  xSemaphoreGive(display_data_mutex);
   // --- End of critical section ---
 
   if (!has_update) return;
@@ -868,7 +884,7 @@ void update_display_from_can_data(void) {
         right_val = max_values.lambda_bank2_max * 0.01f * 14.7f;
         break;
       case 2:
-        left_val  = max_values.map_max * 0.1f / 6.895f;
+        left_val  = (max_values.map_max * 0.1f - 105.0f) / 6.895f;
         right_val = max_values.speed_max * 0.1f / 1.60934f;
         break;
       case 3:
@@ -891,7 +907,7 @@ void update_display_from_can_data(void) {
         right_val = right_val * 0.01f * 14.7f;
         break;
       case 2:
-        left_val  = left_val * 0.1f / 6.895f;
+        left_val  = (left_val * 0.1f - 105.0f) / 6.895f;  // MAP: x0.1 kPa, -105 kPa offset → PSI
         right_val = right_val * 0.1f / 1.60934f;
         break;
       case 3:
@@ -913,6 +929,9 @@ void setup(void) {
   Serial.begin(115200);
   delay(100);
   Serial.println("Setup starting...");
+
+  // Create mutexes before starting any tasks
+  display_data_mutex = xSemaphoreCreateMutex();
   
   // Load persistent data from NVS
   load_persistent_data();
