@@ -25,21 +25,19 @@ void st7701_write_data(uint8_t data) {
 
 void st7701_cs_en(){
   set_exio(EXIO_PIN3, Low);
-
-  vTaskDelay(pdMS_TO_TICKS(10));
+  delay(10);
 }
 
 void st7701_cs_dis(){
   set_exio(EXIO_PIN3, High);
-
-  vTaskDelay(pdMS_TO_TICKS(10));
+  delay(10);
 }
 
 void st7701_reset(){
   set_exio(EXIO_PIN1, Low);
-  vTaskDelay(pdMS_TO_TICKS(10));
+  delay(10);
   set_exio(EXIO_PIN1, High);
-  vTaskDelay(pdMS_TO_TICKS(50));
+  delay(50);
 }
 
 void st7701_init() {
@@ -281,11 +279,11 @@ void st7701_init() {
   st7701_write_data(0x00);
   st7701_write_data(0x0e);
   st7701_write_command(0x11);
-  vTaskDelay(pdMS_TO_TICKS(120));
+  delay(120);
   st7701_write_command(0xe8);
   st7701_write_data(0x00);
   st7701_write_data(0x0c);
-  vTaskDelay(pdMS_TO_TICKS(10));
+  delay(10);
   st7701_write_command(0xe8);
   st7701_write_data(0x40);
   st7701_write_data(0x00);
@@ -300,7 +298,7 @@ void st7701_init() {
   st7701_write_command(0x3A);
   st7701_write_data(0x66);
   st7701_write_command(0x29);
-  vTaskDelay(pdMS_TO_TICKS(20));
+  delay(20);
   
  /* 
   st7701_write_command(0xff);

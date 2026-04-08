@@ -17,14 +17,9 @@
 Preferences preferences;
 
 // CAN Bus Configuration
-QueueHandle_t canMsgQueue;
-#define CAN_QUEUE_LENGTH 64
-#define CAN_QUEUE_ITEM_SIZE sizeof(twai_message_t)
 #define TAG "TWAI"
 
 bool can_initiated = false;
-
-// Watchdog tracking
 unsigned long last_can_message_time = 0;
 unsigned long last_loop_time = 0;
 #define CAN_TIMEOUT_MS 5000
@@ -119,7 +114,6 @@ typedef struct {
 } MaxValues;
 
 volatile MaxValues max_values = {};
-portMUX_TYPE max_values_mutex = portMUX_INITIALIZER_UNLOCKED;
 
 // Max recall state
 volatile bool max_recall_active = false;
@@ -137,7 +131,6 @@ uint32_t trip_miles = 0;
 uint32_t trip2_miles = 0;
 uint8_t last_screen_mode = 0;
 uint8_t current_trip_display = 1; // 1 or 2, always starts at 1
-bool boot_complete = false; // Flag to track when boot screen is done
 bool restore_mode_pending = false; // Flag to trigger mode restore from main loop
 
 // ============================================================================
@@ -322,7 +315,6 @@ void restore_screen_mode_task(void *arg) {
   
   // Set flag to trigger mode restore from main loop (LVGL-safe)
   restore_mode_pending = true;
-  boot_complete = true;
   
   Serial.printf("Boot complete, will restore mode to %d\n", last_screen_mode);
   
@@ -480,199 +472,164 @@ void receive_can_task(void *arg) {
     if (err == ESP_OK) {
       msg_count++;
       last_can_message_time = millis();
+      unsigned long now_msg = millis(); // Capture time once, outside any critical section
       
       portENTER_CRITICAL(&display_data_mutex);
       switch (message.identifier) {
         // ---- M1 ECU native messages ----
 
         case 0x640: {
-          // Inlet_Manifold_Pressure: B2-3, x0.1 kPa (big-endian bit 23, 16-bit)
           uint16_t map_raw = ((uint16_t)message.data[0] << 8) | message.data[1];
           display_data.map_raw = map_raw;
           display_data.updated_0x640 = true;
-          display_data.last_update_0x640 = millis();
-          portENTER_CRITICAL(&max_values_mutex);
+          display_data.last_update_0x640 = now_msg;
           if (map_raw > max_values.map_max) max_values.map_max = map_raw;
-          portEXIT_CRITICAL(&max_values_mutex);
           break;
         }
 
         case 0x641: {
-          // Fuel_Pressure_Sensor: B4-5 (bits 39-24), x0.1 kPa
           uint16_t ls_raw = ((uint16_t)message.data[4] << 8) | message.data[5];
           display_data.ls_fuel_press_raw = ls_raw;
           display_data.updated_0x641 = true;
-          display_data.last_update_0x641 = millis();
-          portENTER_CRITICAL(&max_values_mutex);
+          display_data.last_update_0x641 = now_msg;
           if (ls_raw > max_values.ls_fuel_press_max) max_values.ls_fuel_press_max = ls_raw;
-          portEXIT_CRITICAL(&max_values_mutex);
           break;
         }
 
         case 0x644: {
-          // Engine_Oil_Pressure: B4-5 (bits 55-40), x0.1 kPa
           uint16_t op_raw = ((uint16_t)message.data[4] << 8) | message.data[5];
           display_data.oil_press_raw = op_raw;
           display_data.updated_0x644 = true;
-          display_data.last_update_0x644 = millis();
-          portENTER_CRITICAL(&max_values_mutex);
+          display_data.last_update_0x644 = now_msg;
           if (op_raw > max_values.oil_press_max) max_values.oil_press_max = op_raw;
-          portEXIT_CRITICAL(&max_values_mutex);
           break;
         }
 
         case 0x649: {
-          // Coolant_Temperature: B0 (bit 7), x1 -40 offset, °C
-          // ECU_Battery_Voltage: B5 (bit 47), x0.1 V
           display_data.coolant_temp_raw = message.data[0];
           display_data.battery_volts_raw = message.data[5];
           display_data.updated_0x649 = true;
-          display_data.last_update_0x649 = millis();
-          portENTER_CRITICAL(&max_values_mutex);
+          display_data.last_update_0x649 = now_msg;
           if (message.data[0] > max_values.coolant_temp_max) max_values.coolant_temp_max = message.data[0];
           if (message.data[5] > max_values.battery_volts_max) max_values.battery_volts_max = message.data[5];
-          portEXIT_CRITICAL(&max_values_mutex);
           break;
         }
 
         case 0x651: {
-          // Exhaust_Lambda_Bank_1: B2 (bit 23), x0.01 LA
-          // Exhaust_Lambda_Bank_2: B3 (bit 31), x0.01 LA
           display_data.lambda_bank1_raw = message.data[2];
           display_data.lambda_bank2_raw = message.data[3];
           display_data.updated_0x651 = true;
-          display_data.last_update_0x651 = millis();
-          portENTER_CRITICAL(&max_values_mutex);
+          display_data.last_update_0x651 = now_msg;
           if (message.data[2] > max_values.lambda_bank1_max) max_values.lambda_bank1_max = message.data[2];
           if (message.data[3] > max_values.lambda_bank2_max) max_values.lambda_bank2_max = message.data[3];
-          portEXIT_CRITICAL(&max_values_mutex);
           break;
         }
 
         case 0x653: {
-          // Fuel_Pressure_Direct_B1: B0-1 (bit 7, 16-bit), x1 kPa
           uint16_t di_raw = ((uint16_t)message.data[0] << 8) | message.data[1];
           display_data.di_fuel_press_raw = di_raw;
           display_data.updated_0x653 = true;
-          display_data.last_update_0x653 = millis();
-          portENTER_CRITICAL(&max_values_mutex);
+          display_data.last_update_0x653 = now_msg;
           if (di_raw > max_values.di_fuel_press_max) max_values.di_fuel_press_max = di_raw;
-          portEXIT_CRITICAL(&max_values_mutex);
           break;
         }
 
         case 0x659: {
-          // Vehicle_Speed: B4-5 (bit 39, 16-bit), x0.1 km/h
           uint16_t spd_raw = ((uint16_t)message.data[4] << 8) | message.data[5];
           display_data.speed_raw = spd_raw;
           display_data.updated_0x659 = true;
-          display_data.last_update_0x659 = millis();
-          portENTER_CRITICAL(&max_values_mutex);
+          display_data.last_update_0x659 = now_msg;
           if (spd_raw > max_values.speed_max) max_values.speed_max = spd_raw;
-          portEXIT_CRITICAL(&max_values_mutex);
-          // Update odometer speed (convert to MPH: km/h * 0.1 / 1.60934)
-          portENTER_CRITICAL(&speed_mutex);
-          current_speed = (uint8_t)(spd_raw * 0.1f / 1.60934f);
-          portEXIT_CRITICAL(&speed_mutex);
           break;
         }
 
         case 0x670: {
-          // Fuel_Composition (ethanol %): B5 (bit 47), x1 %
           display_data.ethanol_pct_raw = message.data[5];
           display_data.updated_0x670 = true;
-          display_data.last_update_0x670 = millis();
-          portENTER_CRITICAL(&max_values_mutex);
+          display_data.last_update_0x670 = now_msg;
           if (message.data[5] > max_values.ethanol_pct_max) max_values.ethanol_pct_max = message.data[5];
-          portEXIT_CRITICAL(&max_values_mutex);
           break;
         }
+
         case 0x673: {
-          // Max recall: B0=1, Clear max: B1=1
           if (message.data[0] == 1) {
             max_recall_active = true;
             max_clear_active = false;
-            max_recall_start_time = millis();
-            Serial.println("Max recall activated");
+            max_recall_start_time = now_msg;
           }
           if (message.data[1] == 1) {
             uint8_t current_mode = get_current_screen_mode();
-            portENTER_CRITICAL(&max_values_mutex);
             switch (current_mode) {
-              case 0: // Temp/Oil
+              case 0:
                 max_values.coolant_temp_max = 0;
                 max_values.oil_press_max = 0;
-                Serial.println("Max values reset: Temp/Oil");
                 break;
-              case 1: // AFR (Lambda)
+              case 1:
                 max_values.lambda_bank1_max = 0;
                 max_values.lambda_bank2_max = 0;
-                Serial.println("Max values reset: AFR");
                 break;
-              case 2: // MAP/Speed
+              case 2:
                 max_values.map_max = 0;
                 max_values.speed_max = 0;
-                Serial.println("Max values reset: MAP/Speed");
                 break;
-              case 3: // Fuel
+              case 3:
                 max_values.ls_fuel_press_max = 0;
                 max_values.di_fuel_press_max = 0;
-                Serial.println("Max values reset: Fuel");
                 break;
-              case 4: // Ethanol/Battery
+              case 4:
                 max_values.ethanol_pct_max = 0;
                 max_values.battery_volts_max = 0;
-                Serial.println("Max values reset: Ethanol/Battery");
                 break;
             }
-            portEXIT_CRITICAL(&max_values_mutex);
             max_recall_active = true;
             max_clear_active = true;
-            max_recall_start_time = millis();
+            max_recall_start_time = now_msg;
           }
           break;
         }
+
         case 0x64E: {
-          // Launch Control: buf[3] bit 5
-          // TCS: buf[3] bit 4
-          unsigned long now_icon = millis();
           if ((message.data[3] >> 5) & 0x01) {
             launch_active = true;
-            last_launch_time = now_icon;
+            last_launch_time = now_msg;
           }
           if ((message.data[3] >> 4) & 0x01) {
             tcs_active = true;
-            last_tcs_time = now_icon;
+            last_tcs_time = now_msg;
           }
           break;
         }
 
         case 0x650: {
-          // 2-Step: buf[7] bit 6
-          unsigned long now_icon = millis();
           if ((message.data[7] >> 6) & 0x01) {
             two_step_active = true;
-            last_two_step_time = now_icon;
+            last_two_step_time = now_msg;
           }
           break;
         }
 
         case 0x6A8: {
-          // Cruise Control: buf[3], Exhaust Bypass: buf[5], Flame Mode: buf[6]
-          unsigned long now_icon = millis();
           if (message.data[3]) {
             cruise_active = true;
-            last_cruise_time = now_icon;
+            last_cruise_time = now_msg;
           }
           if (message.data[5]) {
             exhaust_bypass_active = true;
-            last_exhaust_bypass_time = now_icon;
+            last_exhaust_bypass_time = now_msg;
           }
           break;
         }
       }
       portEXIT_CRITICAL(&display_data_mutex);
-      
+
+      // Update current_speed outside the critical section (avoids nested lock with speed_mutex)
+      if (message.identifier == 0x659) {
+        uint16_t spd_raw = ((uint16_t)message.data[4] << 8) | message.data[5];
+        portENTER_CRITICAL(&speed_mutex);
+        current_speed = (uint8_t)(spd_raw * 0.1f / 1.60934f);
+        portEXIT_CRITICAL(&speed_mutex);
+      }
+
       if (msg_count % 10 == 0) {
         vTaskDelay(pdMS_TO_TICKS(1));
       }
@@ -800,149 +757,156 @@ void update_display_from_can_data(void) {
   if (max_recall_active && (now - max_recall_start_time >= MAX_RECALL_DURATION_MS)) {
     max_recall_active = false;
     max_clear_active = false;
-    Serial.println("Max recall deactivated");
   }
   
   float left_val = 0.0f, right_val = 0.0f;
   bool has_update = false;
   uint8_t mode = get_current_screen_mode();
-  unsigned long now_time = millis();
-  
+
+  // --- Snapshot display_data under mutex, no nested locks ---
   portENTER_CRITICAL(&display_data_mutex);
-  
-  // Timeout checks - reset to zero if no updates received
-  if (display_data.last_update_0x649 > 0 && now_time - display_data.last_update_0x649 > CAN_DATA_TIMEOUT_MS) {
-    display_data.coolant_temp_raw = 40; // -40 offset → displays as 0°C
+
+  // Timeout checks
+  if (display_data.last_update_0x649 > 0 && now - display_data.last_update_0x649 > CAN_DATA_TIMEOUT_MS) {
+    display_data.coolant_temp_raw = 40;
     display_data.battery_volts_raw = 0;
     display_data.updated_0x649 = true;
   }
-  if (display_data.last_update_0x644 > 0 && now_time - display_data.last_update_0x644 > CAN_DATA_TIMEOUT_MS) {
+  if (display_data.last_update_0x644 > 0 && now - display_data.last_update_0x644 > CAN_DATA_TIMEOUT_MS) {
     display_data.oil_press_raw = 0;
     display_data.updated_0x644 = true;
   }
-  if (display_data.last_update_0x651 > 0 && now_time - display_data.last_update_0x651 > CAN_DATA_TIMEOUT_MS) {
+  if (display_data.last_update_0x651 > 0 && now - display_data.last_update_0x651 > CAN_DATA_TIMEOUT_MS) {
     display_data.lambda_bank1_raw = 0;
     display_data.lambda_bank2_raw = 0;
     display_data.updated_0x651 = true;
   }
-  if (display_data.last_update_0x640 > 0 && now_time - display_data.last_update_0x640 > CAN_DATA_TIMEOUT_MS) {
+  if (display_data.last_update_0x640 > 0 && now - display_data.last_update_0x640 > CAN_DATA_TIMEOUT_MS) {
     display_data.map_raw = 0;
     display_data.updated_0x640 = true;
   }
-  if (display_data.last_update_0x659 > 0 && now_time - display_data.last_update_0x659 > CAN_DATA_TIMEOUT_MS) {
+  if (display_data.last_update_0x659 > 0 && now - display_data.last_update_0x659 > CAN_DATA_TIMEOUT_MS) {
     display_data.speed_raw = 0;
     display_data.updated_0x659 = true;
-    portENTER_CRITICAL(&speed_mutex);
-    current_speed = 0;
-    portEXIT_CRITICAL(&speed_mutex);
+    current_speed = 0; // speed_mutex not needed here - main loop only
   }
-  if (display_data.last_update_0x641 > 0 && now_time - display_data.last_update_0x641 > CAN_DATA_TIMEOUT_MS) {
+  if (display_data.last_update_0x641 > 0 && now - display_data.last_update_0x641 > CAN_DATA_TIMEOUT_MS) {
     display_data.ls_fuel_press_raw = 0;
     display_data.updated_0x641 = true;
   }
-  if (display_data.last_update_0x653 > 0 && now_time - display_data.last_update_0x653 > CAN_DATA_TIMEOUT_MS) {
+  if (display_data.last_update_0x653 > 0 && now - display_data.last_update_0x653 > CAN_DATA_TIMEOUT_MS) {
     display_data.di_fuel_press_raw = 0;
     display_data.updated_0x653 = true;
   }
-  if (display_data.last_update_0x670 > 0 && now_time - display_data.last_update_0x670 > CAN_DATA_TIMEOUT_MS) {
+  if (display_data.last_update_0x670 > 0 && now - display_data.last_update_0x670 > CAN_DATA_TIMEOUT_MS) {
     display_data.ethanol_pct_raw = 0;
     display_data.updated_0x670 = true;
   }
-  
-  // Determine if current screen has new data, apply scaling
+
+  // Snapshot the values we need for this screen
   switch (mode) {
-    case 0: // Coolant temp (°F) + Oil pressure (PSI)
+    case 0:
       if (display_data.updated_0x649 || display_data.updated_0x644 || max_recall_active) {
-        if (max_recall_active) {
-          portENTER_CRITICAL(&max_values_mutex);
-          // Coolant: raw -40 offset °C → °F
-          left_val  = ((max_values.coolant_temp_max - 40) * 9.0f / 5.0f) + 32.0f;
-          // Oil: raw x0.1 kPa → PSI
-          right_val = max_values.oil_press_max * 0.1f / 6.895f;
-          portEXIT_CRITICAL(&max_values_mutex);
-        } else {
-          left_val  = ((display_data.coolant_temp_raw - 40) * 9.0f / 5.0f) + 32.0f;
-          right_val = display_data.oil_press_raw * 0.1f / 6.895f;
-        }
+        left_val  = display_data.coolant_temp_raw;
+        right_val = display_data.oil_press_raw;
         display_data.updated_0x649 = false;
         display_data.updated_0x644 = false;
         has_update = true;
       }
       break;
-      
-    case 1: // AFR Bank 1 + Bank 2 (Lambda x0.01 x 14.7)
+    case 1:
       if (display_data.updated_0x651 || max_recall_active) {
-        if (max_recall_active) {
-          portENTER_CRITICAL(&max_values_mutex);
-          left_val  = max_values.lambda_bank1_max * 0.01f * 14.7f;
-          right_val = max_values.lambda_bank2_max * 0.01f * 14.7f;
-          portEXIT_CRITICAL(&max_values_mutex);
-        } else {
-          left_val  = display_data.lambda_bank1_raw * 0.01f * 14.7f;
-          right_val = display_data.lambda_bank2_raw * 0.01f * 14.7f;
-        }
+        left_val  = display_data.lambda_bank1_raw;
+        right_val = display_data.lambda_bank2_raw;
         display_data.updated_0x651 = false;
         has_update = true;
       }
       break;
-      
-    case 2: // MAP (PSI) + Speed (MPH)
+    case 2:
       if (display_data.updated_0x640 || display_data.updated_0x659 || max_recall_active) {
-        if (max_recall_active) {
-          portENTER_CRITICAL(&max_values_mutex);
-          left_val  = max_values.map_max * 0.1f / 6.895f;
-          right_val = max_values.speed_max * 0.1f / 1.60934f;
-          portEXIT_CRITICAL(&max_values_mutex);
-        } else {
-          left_val  = display_data.map_raw * 0.1f / 6.895f;
-          right_val = display_data.speed_raw * 0.1f / 1.60934f;
-        }
+        left_val  = display_data.map_raw;
+        right_val = display_data.speed_raw;
         display_data.updated_0x640 = false;
         display_data.updated_0x659 = false;
         has_update = true;
       }
       break;
-      
-    case 3: // Low side fuel pressure (PSI) + DI fuel pressure (PSI)
+    case 3:
       if (display_data.updated_0x641 || display_data.updated_0x653 || max_recall_active) {
-        if (max_recall_active) {
-          portENTER_CRITICAL(&max_values_mutex);
-          left_val  = max_values.ls_fuel_press_max * 0.1f / 6.895f;
-          right_val = max_values.di_fuel_press_max / 6.895f;
-          portEXIT_CRITICAL(&max_values_mutex);
-        } else {
-          left_val  = display_data.ls_fuel_press_raw * 0.1f / 6.895f;
-          right_val = display_data.di_fuel_press_raw / 6.895f;
-        }
+        left_val  = display_data.ls_fuel_press_raw;
+        right_val = display_data.di_fuel_press_raw;
         display_data.updated_0x641 = false;
         display_data.updated_0x653 = false;
         has_update = true;
       }
       break;
-      
-    case 4: // Ethanol % + Battery voltage (V)
+    case 4:
       if (display_data.updated_0x670 || display_data.updated_0x649 || max_recall_active) {
-        if (max_recall_active) {
-          portENTER_CRITICAL(&max_values_mutex);
-          left_val  = max_values.ethanol_pct_max;
-          right_val = max_values.battery_volts_max * 0.1f;
-          portEXIT_CRITICAL(&max_values_mutex);
-        } else {
-          left_val  = display_data.ethanol_pct_raw;
-          right_val = display_data.battery_volts_raw * 0.1f;
-        }
+        left_val  = display_data.ethanol_pct_raw;
+        right_val = display_data.battery_volts_raw;
         display_data.updated_0x670 = false;
         display_data.updated_0x649 = false;
         has_update = true;
       }
       break;
   }
+
   portEXIT_CRITICAL(&display_data_mutex);
-  
-  if (has_update) {
-    update_display_values(mode, left_val, right_val);
-    last_update_time = now;
+  // --- End of critical section ---
+
+  if (!has_update) return;
+
+  // Apply scaling outside the mutex - read max_values directly (volatile, no lock needed)
+  if (max_recall_active) {
+    switch (mode) {
+      case 0:
+        left_val  = ((max_values.coolant_temp_max - 40) * 9.0f / 5.0f) + 32.0f;
+        right_val = max_values.oil_press_max * 0.1f / 6.895f;
+        break;
+      case 1:
+        left_val  = max_values.lambda_bank1_max * 0.01f * 14.7f;
+        right_val = max_values.lambda_bank2_max * 0.01f * 14.7f;
+        break;
+      case 2:
+        left_val  = max_values.map_max * 0.1f / 6.895f;
+        right_val = max_values.speed_max * 0.1f / 1.60934f;
+        break;
+      case 3:
+        left_val  = max_values.ls_fuel_press_max * 0.1f / 6.895f;
+        right_val = max_values.di_fuel_press_max / 6.895f;
+        break;
+      case 4:
+        left_val  = max_values.ethanol_pct_max;
+        right_val = max_values.battery_volts_max * 0.1f;
+        break;
+    }
+  } else {
+    switch (mode) {
+      case 0:
+        left_val  = ((left_val - 40) * 9.0f / 5.0f) + 32.0f;
+        right_val = right_val * 0.1f / 6.895f;
+        break;
+      case 1:
+        left_val  = left_val * 0.01f * 14.7f;
+        right_val = right_val * 0.01f * 14.7f;
+        break;
+      case 2:
+        left_val  = left_val * 0.1f / 6.895f;
+        right_val = right_val * 0.1f / 1.60934f;
+        break;
+      case 3:
+        left_val  = left_val * 0.1f / 6.895f;
+        right_val = right_val / 6.895f;
+        break;
+      case 4:
+        // left_val (ethanol) needs no scaling
+        right_val = right_val * 0.1f;
+        break;
+    }
   }
+
+  update_display_values(mode, left_val, right_val);
+  last_update_time = now;
 }
 
 void setup(void) {
@@ -966,13 +930,7 @@ void setup(void) {
   esp_reset_reason_t reason = esp_reset_reason();
   Serial.printf("Reset reason: %d\n", reason);
 
-  canMsgQueue = xQueueCreate(CAN_QUEUE_LENGTH, CAN_QUEUE_ITEM_SIZE);
-  if (canMsgQueue == NULL) {
-    ESP_LOGE(TAG, "Failed to create CAN message queue");
-    while (1) vTaskDelay(1000);
-  }
-
-  xTaskCreatePinnedToCore(receive_can_task, "RX_CAN", 4096, NULL, 2, NULL, 1);  
+  xTaskCreatePinnedToCore(receive_can_task, "RX_CAN", 4096, NULL, 1, NULL, 0);  // Core 0, priority 1
   xTaskCreatePinnedToCore(delayed_can_init_task, "Init_CAN", 2048, NULL, 1, NULL, 1);  
   xTaskCreatePinnedToCore(watchdog_task, "Watchdog", 2048, NULL, 1, NULL, 0);
   xTaskCreatePinnedToCore(periodic_save_task, "Save_NVS", 2048, NULL, 1, NULL, 0);

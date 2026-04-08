@@ -16,8 +16,8 @@ void canbus_init(void) {
     // Covers all ECU messages (0x640-0x670) and icon messages (0x64E, 0x650, 0x6A8)
     // mask=0x700, code=0x600 accepts exactly 0x600-0x6FF
     twai_filter_config_t f_config = {
-      .acceptance_code = (0x600 << 21),
-      .acceptance_mask = ~(0x700 << 21),
+      .acceptance_code = ((uint32_t)0x600 << 21),
+      .acceptance_mask = ~((uint32_t)0x700 << 21),
       .single_filter = true
     };
  
@@ -26,13 +26,19 @@ void canbus_init(void) {
         Serial.println("TWAI driver installed.");
     } else {
         Serial.println("Failed to install TWAI driver.");
-        return; // Don't hang, allow system to continue
+        return;
     }
 
     if (twai_start() == ESP_OK) {
         Serial.println("TWAI driver started. Listening for messages...");
     } else {
         Serial.println("Failed to start TWAI driver.");
-        return; // Don't hang, allow system to continue
+        return;
     }
+
+    // Flush any messages that accumulated in the RX buffer during init
+    twai_message_t dummy;
+    uint32_t flushed = 0;
+    while (twai_receive(&dummy, 0) == ESP_OK) { flushed++; }
+    Serial.printf("Flushed %lu stale CAN messages after init\n", flushed);
 }
