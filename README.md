@@ -34,7 +34,7 @@ A high-performance automotive gauge display system built on ESP32 with LVGL grap
 | P7  | Trip Switch | Toggle between Trip 1 and Trip 2 |
 | P8  | Reserved | Available for future use |
 
-All inputs use internal pull-ups and trigger on falling edge (pull to ground).
+All inputs use internal pull-ups and trigger on falling edge (pull to ground). Screen change, trip reset, and trip switch are GPIO-only (no CAN equivalent).
 
 ## Screens
 
@@ -68,51 +68,49 @@ All screens display odometer and trip meter values at the bottom.
 - **Both track continuously**: Distance accumulates on both trips regardless of which is displayed
 - **Individual Reset**: Only the currently displayed trip is reset
 - **Persistent Storage**: Both trip values saved to NVS flash every 10 seconds
-- **Switch Control**: Toggle between Trip 1 and Trip 2 via P7 button or CAN 0x559
+- **Switch Control**: Toggle between Trip 1 and Trip 2 via P7 button
 
 ## Status Icons
 
-Six status icons display on the right side of the screen:
+Six status icons display on the right side of the screen, driven directly from M1 ECU native CAN messages:
 
-| Icon | Trigger | Display Behavior |
-|------|---------|------------------|
-| Cruise Control | CAN 0x560 B0=1 | Shows for 2s on startup, or while CAN active (500ms timeout) |
-| Traction Control | CAN 0x560 B1=1 | Shows for 2s on startup, or while CAN active (500ms timeout) |
-| Launch Control | CAN 0x560 B2=1 | Shows for 2s on startup, or while CAN active (500ms timeout) |
-| 2-Step | CAN 0x560 B3=1 | Shows for 2s on startup, or while CAN active (500ms timeout) |
-| Exhaust Bypass | CAN 0x560 B4=1 | Shows for 2s on startup, or while CAN active (500ms timeout) |
-| Peak Recall | CAN 0x556 active | Shows PeakRecall icon for 2s on startup or during max recall |
-| Clear Peak Recall | CAN 0x557 active | Shows ClearPeakRecall icon for 2s when clearing max values |
+| Icon | CAN ID | Byte | Bit | Display Behavior |
+|------|--------|------|-----|------------------|
+| Cruise Control | 0x6A8 | buf[3] | full byte | Shows for 2s on startup, or while active (500ms timeout) |
+| Traction Control | 0x64E | buf[3] | bit 4 | Shows for 2s on startup, or while active (500ms timeout) |
+| Launch Control | 0x64E | buf[3] | bit 5 | Shows for 2s on startup, or while active (500ms timeout) |
+| 2-Step | 0x650 | buf[7] | bit 6 | Shows for 2s on startup, or while active (500ms timeout) |
+| Exhaust Bypass | 0x6A8 | buf[5] | full byte | Shows for 2s on startup, or while active (500ms timeout) |
+| Peak Recall | 0x673 B0=1 | - | - | Shows PeakRecall icon for 2s on startup or during max recall |
+| Clear Peak Recall | 0x673 B1=1 | - | - | Shows ClearPeakRecall icon for 2s when clearing max values |
 
-All icons (except Peak Recall variants) hide 500ms after last CAN message received. The Peak Recall icon dynamically swaps between two images based on context (recall vs clear).
+All status icons hide 500ms after the last active CAN message. The Peak Recall icon dynamically swaps between two images based on context (recall vs clear).
 
 ## CAN Message IDs
 
+All messages are in the 0x600-0x6FF range. A hardware acceptance filter on the ESP32 TWAI controller rejects everything outside this range before it reaches software, significantly reducing CPU load on a busy automotive CAN bus.
+
 ### M1 ECU Input Messages (read by gauge)
 
-| ID (hex) | ID (dec) | DBC Name | Signals Used | Scaling |
-|----------|----------|----------|--------------|---------|
-| 0x640 | 1600 | M1_General_0x640 | Inlet_Manifold_Pressure (B2-3) | ×0.1 kPa → PSI |
-| 0x641 | 1601 | M1_General_0x641 | Fuel_Pressure_Sensor (B4-5) | ×0.1 kPa → PSI |
-| 0x644 | 1604 | M1_General_0x644 | Engine_Oil_Pressure (B4-5) | ×0.1 kPa → PSI |
-| 0x649 | 1609 | M1_General_0x649 | Coolant_Temperature (B0), ECU_Battery_Voltage (B5) | ×1 -40°C→°F, ×0.1 V |
-| 0x651 | 1617 | M1_General_0x651 | Exhaust_Lambda_Bank_1 (B2), Exhaust_Lambda_Bank_2 (B3) | ×0.01 LA → ×14.7 AFR |
-| 0x653 | 1619 | M1_General_0x653 | Fuel_Pressure_Direct_B1 (B0-1) | ×1 kPa → PSI |
-| 0x659 | 1625 | M1_General_0x659 | Vehicle_Speed (B4-5) | ×0.1 km/h → MPH |
-| 0x670 | 1648 | M1_Flex_Fuel_0x670 | Fuel_Composition (B5) | ×1 % |
+| ID (hex) | ID (dec) | Signals Used | Scaling |
+|----------|----------|--------------|---------|
+| 0x640 | 1600 | Inlet_Manifold_Pressure (B0-1) | ×0.1 kPa → PSI |
+| 0x641 | 1601 | Fuel_Pressure_Sensor (B4-5) | ×0.1 kPa → PSI |
+| 0x644 | 1604 | Engine_Oil_Pressure (B4-5) | ×0.1 kPa → PSI |
+| 0x649 | 1609 | Coolant_Temperature (B0), ECU_Battery_Voltage (B5) | ×1 -40°C→°F, ×0.1 V |
+| 0x64E | 1614 | TCS (B3 bit 4), Launch_Control (B3 bit 5) | bit flags |
+| 0x650 | 1616 | 2-Step (B7 bit 6) | bit flag |
+| 0x651 | 1617 | Exhaust_Lambda_Bank_1 (B2), Exhaust_Lambda_Bank_2 (B3) | ×0.01 LA → ×14.7 AFR |
+| 0x653 | 1619 | Fuel_Pressure_Direct_B1 (B0-1) | ×1 kPa → PSI |
+| 0x659 | 1625 | Vehicle_Speed (B4-5) | ×0.1 km/h → MPH |
+| 0x670 | 1648 | Fuel_Composition (B5) | ×1 % |
+| 0x6A8 | 1704 | Cruise_Control (B3), Exhaust_Bypass (B5) | full byte flags |
 
-### Gauge Control Messages (custom)
+### Gauge Control Messages
 
 | ID    | Description | Data Bytes |
 |-------|-------------|------------|
-| 0x550 | Trip meter reset | B0: 1 = reset currently displayed trip |
-| 0x556 | Max value recall | Display max values for 2 seconds |
-| 0x557 | Reset max values | Clear max values for currently displayed screen only |
-| 0x558 | Screen change | B0: 1 = cycle through screens |
-| 0x559 | Trip switch | B0: 1 = toggle between Trip 1 and Trip 2 |
-| 0x560 | Status icons | B0: Cruise, B1: TCS, B2: Launch, B3: 2-Step, B4: Exhaust Bypass |
-
-**Note**: All gauge control messages have physical button equivalents on TCA9554 P5-P7
+| 0x673 | Peak recall / Clear max | B0: 1 = show max values, B1: 1 = clear max for current screen |
 
 ## Architecture
 

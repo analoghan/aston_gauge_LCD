@@ -97,8 +97,6 @@ typedef struct {
   uint8_t  ethanol_pct_raw;     // x1 → %
   bool     updated_0x670;
   unsigned long last_update_0x670;
-
-  bool screen_change_requested;
 } DisplayData;
 
 volatile DisplayData display_data = {};
@@ -485,12 +483,6 @@ void receive_can_task(void *arg) {
       
       portENTER_CRITICAL(&display_data_mutex);
       switch (message.identifier) {
-        case 0x550:
-          if (message.data[0] == 1) {
-            trip_reset_pending = true;
-          }
-          break;
-
         // ---- M1 ECU native messages ----
 
         case 0x640: {
@@ -595,86 +587,89 @@ void receive_can_task(void *arg) {
           portEXIT_CRITICAL(&max_values_mutex);
           break;
         }
-        case 0x556:
-          // Max recall requested
-          max_recall_active = true;
-          max_clear_active = false; // Showing recall, not clear
-          max_recall_start_time = millis();
-          Serial.println("Max recall activated");
-          break;
-        case 0x557: {
-          // Reset max values for currently displayed screen mode only
-          uint8_t current_mode = get_current_screen_mode();
-          portENTER_CRITICAL(&max_values_mutex);
-          switch (current_mode) {
-            case 0: // Temp/Oil
-              max_values.coolant_temp_max = 0;
-              max_values.oil_press_max = 0;
-              Serial.println("Max values reset: Temp/Oil");
-              break;
-            case 1: // AFR (Lambda)
-              max_values.lambda_bank1_max = 0;
-              max_values.lambda_bank2_max = 0;
-              Serial.println("Max values reset: AFR");
-              break;
-            case 2: // MAP/Speed
-              max_values.map_max = 0;
-              max_values.speed_max = 0;
-              Serial.println("Max values reset: MAP/Speed");
-              break;
-            case 3: // Fuel
-              max_values.ls_fuel_press_max = 0;
-              max_values.di_fuel_press_max = 0;
-              Serial.println("Max values reset: Fuel");
-              break;
-            case 4: // Ethanol/Battery
-              max_values.ethanol_pct_max = 0;
-              max_values.battery_volts_max = 0;
-              Serial.println("Max values reset: Ethanol/Battery");
-              break;
-          }
-          portEXIT_CRITICAL(&max_values_mutex);
-          
-          // Show clear icon for 2 seconds
-          max_recall_active = true;
-          max_clear_active = true;
-          max_recall_start_time = millis();
-          break;
-        }
-        case 0x558:
+        case 0x673: {
+          // Max recall: B0=1, Clear max: B1=1
           if (message.data[0] == 1) {
-            display_data.screen_change_requested = true;
-          }
-          break;
-        case 0x559:
-          if (message.data[0] == 1) {
-            // Trip switch requested - set flag for main loop
-            trip_switch_pending = true;
-          }
-          break;
-        case 0x560:
-          // Status icons control
-          if (message.data[0] == 1) {
-            cruise_active = true;
-            last_cruise_time = millis();
+            max_recall_active = true;
+            max_clear_active = false;
+            max_recall_start_time = millis();
+            Serial.println("Max recall activated");
           }
           if (message.data[1] == 1) {
-            tcs_active = true;
-            last_tcs_time = millis();
-          }
-          if (message.data[2] == 1) {
-            launch_active = true;
-            last_launch_time = millis();
-          }
-          if (message.data[3] == 1) {
-            two_step_active = true;
-            last_two_step_time = millis();
-          }
-          if (message.data[4] == 1) {
-            exhaust_bypass_active = true;
-            last_exhaust_bypass_time = millis();
+            uint8_t current_mode = get_current_screen_mode();
+            portENTER_CRITICAL(&max_values_mutex);
+            switch (current_mode) {
+              case 0: // Temp/Oil
+                max_values.coolant_temp_max = 0;
+                max_values.oil_press_max = 0;
+                Serial.println("Max values reset: Temp/Oil");
+                break;
+              case 1: // AFR (Lambda)
+                max_values.lambda_bank1_max = 0;
+                max_values.lambda_bank2_max = 0;
+                Serial.println("Max values reset: AFR");
+                break;
+              case 2: // MAP/Speed
+                max_values.map_max = 0;
+                max_values.speed_max = 0;
+                Serial.println("Max values reset: MAP/Speed");
+                break;
+              case 3: // Fuel
+                max_values.ls_fuel_press_max = 0;
+                max_values.di_fuel_press_max = 0;
+                Serial.println("Max values reset: Fuel");
+                break;
+              case 4: // Ethanol/Battery
+                max_values.ethanol_pct_max = 0;
+                max_values.battery_volts_max = 0;
+                Serial.println("Max values reset: Ethanol/Battery");
+                break;
+            }
+            portEXIT_CRITICAL(&max_values_mutex);
+            max_recall_active = true;
+            max_clear_active = true;
+            max_recall_start_time = millis();
           }
           break;
+        }
+        case 0x64E: {
+          // Launch Control: buf[3] bit 5
+          // TCS: buf[3] bit 4
+          unsigned long now_icon = millis();
+          if ((message.data[3] >> 5) & 0x01) {
+            launch_active = true;
+            last_launch_time = now_icon;
+          }
+          if ((message.data[3] >> 4) & 0x01) {
+            tcs_active = true;
+            last_tcs_time = now_icon;
+          }
+          break;
+        }
+
+        case 0x650: {
+          // 2-Step: buf[7] bit 6
+          unsigned long now_icon = millis();
+          if ((message.data[7] >> 6) & 0x01) {
+            two_step_active = true;
+            last_two_step_time = now_icon;
+          }
+          break;
+        }
+
+        case 0x6A8: {
+          // Cruise Control: buf[3], Exhaust Bypass: buf[5], Flame Mode: buf[6]
+          unsigned long now_icon = millis();
+          if (message.data[3]) {
+            cruise_active = true;
+            last_cruise_time = now_icon;
+          }
+          if (message.data[5]) {
+            exhaust_bypass_active = true;
+            last_exhaust_bypass_time = now_icon;
+          }
+          break;
+        }
       }
       portEXIT_CRITICAL(&display_data_mutex);
       
@@ -800,22 +795,6 @@ void update_display_from_can_data(void) {
   
   unsigned long now = millis();
   if (now - last_update_time < UPDATE_INTERVAL_MS) return;
-  
-  // Check for mode change request
-  bool mode_change_requested = false;
-  portENTER_CRITICAL(&display_data_mutex);
-  if (display_data.screen_change_requested) {
-    display_data.screen_change_requested = false;
-    mode_change_requested = true;
-  }
-  portEXIT_CRITICAL(&display_data_mutex);
-  
-  if (mode_change_requested) {
-    uint8_t new_mode = (get_current_screen_mode() + 1) % 5;
-    update_screen_labels(new_mode);
-    last_screen_mode = new_mode;
-    Serial.printf("Changed to mode %d\n", new_mode);
-  }
   
   // Expire max recall
   if (max_recall_active && (now - max_recall_start_time >= MAX_RECALL_DURATION_MS)) {

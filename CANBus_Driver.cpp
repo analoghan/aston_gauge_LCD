@@ -11,7 +11,15 @@ void canbus_init(void) {
     g_config.alerts_enabled = TWAI_ALERT_RX_QUEUE_FULL | TWAI_ALERT_BUS_ERROR | TWAI_ALERT_ERR_PASS;
     
     twai_timing_config_t t_config = TWAI_TIMING_CONFIG_500KBITS();
-    twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();  // Accept all IDs
+
+    // Hardware filter: accept IDs 0x600-0x6FF
+    // Covers all ECU messages (0x640-0x670) and icon messages (0x64E, 0x650, 0x6A8)
+    // mask=0x700, code=0x600 accepts exactly 0x600-0x6FF
+    twai_filter_config_t f_config = {
+      .acceptance_code = (0x600 << 21),
+      .acceptance_mask = ~(0x700 << 21),
+      .single_filter = true
+    };
  
     // Install and start TWAI driver
     if (twai_driver_install(&g_config, &t_config, &f_config) == ESP_OK) {

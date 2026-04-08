@@ -1,0 +1,151 @@
+#include <FlexCAN_T4.h>
+
+FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> can1;
+FlexCAN_T4<CAN2, RX_SIZE_256, TX_SIZE_16> can2;
+
+static CAN_message_t msg;
+static int dataLoggerStatus;
+static int exhuastBypassStatus;
+static int flameModeStatus;
+static int launchControlStatus;
+static int twoStepStatus;
+static int coolantTempAlert;
+static int rpm;
+static int voltage;
+static int voltageAlert;
+static int cruiseStatus;
+static int oilPressureAlert;
+byte outputFrame1;
+
+// -------------------------------------------------------------
+void setup(void)
+{
+
+  pinMode(2, OUTPUT); // for the transceiver enable pin
+  digitalWrite(2, LOW);
+
+  pinMode(3, OUTPUT); // for the transceiver enable pin
+  digitalWrite(3, LOW);
+
+  can1.begin();
+  can1.setBaudRate(500000);
+  can2.begin();
+  can2.setBaudRate(500000);
+
+  can2.setMaxMB(16);
+  can2.enableFIFO();
+  can2.enableFIFOInterrupt();
+  can2.onReceive(MotecCanProcessor);
+  can2.mailboxStatus();
+
+}
+
+void MotecCanProcessor(const CAN_message_t &msg) {
+  //Read incoming CANbus data into "dtaGet" and isolate/process frames from Motec M142.
+
+  int voltageA;
+
+      //Serial.print("Input Frame Detected, Message ID: ");
+      //Serial.println(msg.id);
+      //Serial.print(" Extended: ");
+      //Serial.println(msg.flags.extended);
+      if(msg.id == 1614) {
+        uint8_t targetByte1614 = msg.buf[3];
+        launchControlStatus = (targetByte1614 >> 5) & 0x01;        
+        //Serial.println("Launch Control Status: ");
+        //Serial.println(launchControlStatus);           
+      }
+      if(msg.id == 1616) {
+        uint8_t targetByte1616 = msg.buf[7];
+        twoStepStatus = (targetByte1616 >> 6) & 0x01;        
+        //Serial.println("2 Step Status: ");
+        //Serial.println(twoStepStatus);             
+      }
+      if(msg.id == 1704) {
+        cruiseStatus = msg.buf[3];
+        dataLoggerStatus = msg.buf[4];
+        exhuastBypassStatus = msg.buf[5];
+        flameModeStatus = msg.buf[6];
+        //Serial.println("Cruise Status: ");
+        //Serial.println(cruiseStatus);
+        //Serial.println("Data Logger Status: ");
+        //Serial.println(dataLoggerStatus);
+        //Serial.println("Flame Mode Status: ");
+        //Serial.println(flameModeStatus);    
+        //Serial.println("Exhuast Bypass Status: ");
+        //Serial.println(exhuastBypassStatus);              
+      }      
+      if(msg.id == 1609) {
+        voltageA = msg.buf[5];
+        voltage = (voltageA * 0.1);       
+        //Serial.println("Voltage: ");
+        //Serial.println(voltage);
+        if (voltage <= 11) {
+          voltageAlert = 1;
+        }
+        else if (voltage >11) {
+          voltageAlert = 0;
+        }
+        //Serial.println("Voltage Alert Status: ");
+        //Serial.println(voltageAlert);
+      }
+      if(msg.id == 1612) {
+        uint8_t targetByte1612 = msg.buf[5];
+        oilPressureAlert = (targetByte1612 >> 3) & 0x01;
+        coolantTempAlert = (targetByte1612 >> 7) & 0x01;
+        //Serial.println("Oil Alert Status: ");
+        //Serial.println(oilPressureAlert);
+        //Serial.println("Coolant Temp Alert Status: ");
+        //Serial.println(coolantTempAlert);    
+      }      
+      if(msg.id == 1600) {
+        uint8_t rpmHigh = msg.buf[0];
+        uint8_t rpmLow = msg.buf[1];
+        rpm = (rpmHigh << 8) | rpmLow;
+        //rpm = (((rpmA * 256) + rpmB) * 1.2);       
+        //Serial.println("RPM Frame, RPM: ");
+        //Serial.println(rpm);
+      }                
+}
+
+void UpdateZestek() {
+  //Send data to steering wheel controls
+  static const unsigned long REFRESH_INTERVAL_ZESTEK = 50; // ms
+  static unsigned long lastRefreshTimeZestek = 0;
+    if(millis() - lastRefreshTimeZestek >= REFRESH_INTERVAL_ZESTEK)
+    {
+      lastRefreshTimeZestek += REFRESH_INTERVAL_ZESTEK;
+      buildOutputFrame1();
+      byte upper = ((rpm) >> 8);
+      byte lower = (rpm) & 0xFF;
+      msg.flags.extended = 0;
+      msg.id = 360;
+      msg.len = 8;
+      msg.buf[0] = 0;
+      msg.buf[1] = outputFrame1;
+      msg.buf[2] = 0;
+      msg.buf[3] = 0;
+      msg.buf[4] = 0;
+      msg.buf[5] = 0;
+      msg.buf[6] = upper;
+      msg.buf[7] = lower;  
+      msg.buf[0]++;
+      can2.write(msg); 
+    }
+}
+
+
+void buildOutputFrame1() {
+  //oilPressureAlert = 1;
+  outputFrame1 =  (cruiseStatus << 7) | (launchControlStatus << 6) | (oilPressureAlert << 5) | (coolantTempAlert << 4) | (dataLoggerStatus << 3) | (exhuastBypassStatus << 2) | (flameModeStatus << 1) | (voltageAlert << 0);
+
+}
+
+// -------------------------------------------------------------
+void loop(void)
+{
+
+  can2.events();
+  UpdateZestek();
+
+}
