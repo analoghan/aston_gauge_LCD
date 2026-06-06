@@ -231,7 +231,7 @@ void update_screen_labels(uint8_t mode) {
       break;
     case 3:
       lv_label_set_text(left_title_label, "LS Fuel PSI");
-      lv_label_set_text(right_title_label, "DI Fuel PSI");
+      lv_label_set_text(right_title_label, "Inj Duty %");
       break;
     case 4:
       lv_label_set_text(left_title_label, "Ethanol %");

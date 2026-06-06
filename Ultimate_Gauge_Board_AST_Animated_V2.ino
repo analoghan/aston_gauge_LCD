@@ -83,10 +83,10 @@ typedef struct {
   bool     updated_0x641;
   unsigned long last_update_0x641;
 
-  // 0x653: Direct injection fuel pressure Bank 1 (B0-1, x1 kPa)
-  uint16_t di_fuel_press_raw;   // x1 kPa → PSI (/6.895)
-  bool     updated_0x653;
-  unsigned long last_update_0x653;
+  // 0x641: Fuel Injector Primary Duty Cycle (B6, x1 %)
+  uint8_t  inj_duty_cycle_raw;  // x1 → %
+  bool     updated_0x641_duty;
+  unsigned long last_update_0x641_duty;
 
   // 0x670: Ethanol/fuel composition (B5, x1 %)
   uint8_t  ethanol_pct_raw;     // x1 → %
@@ -108,7 +108,7 @@ typedef struct {
   uint16_t map_max;
   uint16_t speed_max;
   uint16_t ls_fuel_press_max;
-  uint16_t di_fuel_press_max;
+  uint8_t  inj_duty_cycle_max;
   uint8_t  ethanol_pct_max;
   uint8_t  battery_volts_max;
 } MaxValues;
@@ -119,7 +119,11 @@ volatile MaxValues max_values = {};
 volatile bool max_recall_active = false;
 volatile bool max_clear_active = false; // Track if we're clearing (vs recalling)
 volatile unsigned long max_recall_start_time = 0;
-#define MAX_RECALL_DURATION_MS 2000 // Show max values for 2 seconds
+volatile unsigned long max_recall_button_press_start = 0; // When button was first pressed
+volatile bool max_recall_button_held = false; // Is the button currently held
+volatile bool max_recall_cleared_this_press = false; // Already cleared during this hold
+#define MAX_RECALL_DISPLAY_MS 2000 // Show max values for 2 seconds after release
+#define MAX_CLEAR_HOLD_MS 3000 // Hold 3 seconds to clear
 
 // ============================================================================
 // PERSISTENT STORAGE
@@ -495,6 +499,12 @@ void receive_can_task(void *arg) {
           display_data.updated_0x641 = true;
           display_data.last_update_0x641 = now_msg;
           if (ls_raw > max_values.ls_fuel_press_max) max_values.ls_fuel_press_max = ls_raw;
+          // Fuel_Injector_Primary_Duty_Cycle: bit 55|8@0+ = B6, x1 %
+          uint8_t duty_raw = message.data[6];
+          display_data.inj_duty_cycle_raw = duty_raw;
+          display_data.updated_0x641_duty = true;
+          display_data.last_update_0x641_duty = now_msg;
+          if (duty_raw > max_values.inj_duty_cycle_max) max_values.inj_duty_cycle_max = duty_raw;
           break;
         }
 
@@ -528,18 +538,6 @@ void receive_can_task(void *arg) {
           break;
         }
 
-        case 0x653: {
-          // Fuel_Pressure_Direct_B1: bit 7|16@0+ = B0-B1, x1 kPa
-          // Guard against 0xFFFF (invalid/not populated)
-          uint16_t di_raw = ((uint16_t)message.data[0] << 8) | message.data[1];
-          if (di_raw == 0xFFFF) di_raw = 0;
-          display_data.di_fuel_press_raw = di_raw;
-          display_data.updated_0x653 = true;
-          display_data.last_update_0x653 = now_msg;
-          if (di_raw > max_values.di_fuel_press_max) max_values.di_fuel_press_max = di_raw;
-          break;
-        }
-
         case 0x659: {
           uint16_t spd_raw = ((uint16_t)message.data[4] << 8) | message.data[5];
           display_data.speed_raw = spd_raw;
@@ -557,39 +555,59 @@ void receive_can_task(void *arg) {
           break;
         }
 
-        case 0x673: {
-          if (message.data[0] == 1) {
+        case 0x178: {
+          // Peak recall button: byte 1, bit 6 (1 = pressed, 0 = released)
+          bool button_now = (message.data[1] >> 6) & 0x01;
+          
+          if (button_now && !max_recall_button_held) {
+            // Button just pressed - start tracking
+            max_recall_button_held = true;
+            max_recall_button_press_start = now_msg;
+            max_recall_cleared_this_press = false;
+            // Immediately show max recall
             max_recall_active = true;
             max_clear_active = false;
             max_recall_start_time = now_msg;
-          }
-          if (message.data[1] == 1) {
-            uint8_t current_mode = get_current_screen_mode();
-            switch (current_mode) {
-              case 0:
-                max_values.coolant_temp_max = 0;
-                max_values.oil_press_max = 0;
-                break;
-              case 1:
-                max_values.lambda_bank1_max = 0;
-                max_values.lambda_bank2_max = 0;
-                break;
-              case 2:
-                max_values.map_max = 0;
-                max_values.speed_max = 0;
-                break;
-              case 3:
-                max_values.ls_fuel_press_max = 0;
-                max_values.di_fuel_press_max = 0;
-                break;
-              case 4:
-                max_values.ethanol_pct_max = 0;
-                max_values.battery_volts_max = 0;
-                break;
+          } else if (button_now && max_recall_button_held) {
+            // Button still held - check for 3-second clear threshold
+            if (!max_recall_cleared_this_press && 
+                (now_msg - max_recall_button_press_start >= MAX_CLEAR_HOLD_MS)) {
+              // 3 seconds held - clear max values for current screen
+              uint8_t current_mode = get_current_screen_mode();
+              switch (current_mode) {
+                case 0:
+                  max_values.coolant_temp_max = 0;
+                  max_values.oil_press_max = 0;
+                  break;
+                case 1:
+                  max_values.lambda_bank1_max = 0;
+                  max_values.lambda_bank2_max = 0;
+                  break;
+                case 2:
+                  max_values.map_max = 0;
+                  max_values.speed_max = 0;
+                  break;
+                case 3:
+                  max_values.ls_fuel_press_max = 0;
+                  max_values.inj_duty_cycle_max = 0;
+                  break;
+                case 4:
+                  max_values.ethanol_pct_max = 0;
+                  max_values.battery_volts_max = 0;
+                  break;
+              }
+              max_clear_active = true;
+              max_recall_start_time = now_msg;
+              max_recall_cleared_this_press = true;
             }
+            // Keep max_recall_active while held
             max_recall_active = true;
-            max_clear_active = true;
             max_recall_start_time = now_msg;
+          } else if (!button_now && max_recall_button_held) {
+            // Button released - show max recall for 2 more seconds then fade
+            max_recall_button_held = false;
+            max_recall_start_time = now_msg;
+            // max_recall_active stays true, will expire via MAX_RECALL_DISPLAY_MS
           }
           break;
         }
@@ -769,8 +787,9 @@ void update_display_from_can_data(void) {
   unsigned long now = millis();
   if (now - last_update_time < UPDATE_INTERVAL_MS) return;
   
-  // Expire max recall
-  if (max_recall_active && (now - max_recall_start_time >= MAX_RECALL_DURATION_MS)) {
+  // Expire max recall (only when button is not held)
+  if (max_recall_active && !max_recall_button_held && 
+      (now - max_recall_start_time >= MAX_RECALL_DISPLAY_MS)) {
     max_recall_active = false;
     max_clear_active = false;
   }
@@ -810,9 +829,9 @@ void update_display_from_can_data(void) {
     display_data.ls_fuel_press_raw = 0;
     display_data.updated_0x641 = true;
   }
-  if (display_data.last_update_0x653 > 0 && now - display_data.last_update_0x653 > CAN_DATA_TIMEOUT_MS) {
-    display_data.di_fuel_press_raw = 0;
-    display_data.updated_0x653 = true;
+  if (display_data.last_update_0x641_duty > 0 && now - display_data.last_update_0x641_duty > CAN_DATA_TIMEOUT_MS) {
+    display_data.inj_duty_cycle_raw = 0;
+    display_data.updated_0x641_duty = true;
   }
   if (display_data.last_update_0x670 > 0 && now - display_data.last_update_0x670 > CAN_DATA_TIMEOUT_MS) {
     display_data.ethanol_pct_raw = 0;
@@ -848,11 +867,11 @@ void update_display_from_can_data(void) {
       }
       break;
     case 3:
-      if (display_data.updated_0x641 || display_data.updated_0x653 || max_recall_active) {
+      if (display_data.updated_0x641 || display_data.updated_0x641_duty || max_recall_active) {
         left_val  = display_data.ls_fuel_press_raw;
-        right_val = display_data.di_fuel_press_raw;
+        right_val = display_data.inj_duty_cycle_raw;
         display_data.updated_0x641 = false;
-        display_data.updated_0x653 = false;
+        display_data.updated_0x641_duty = false;
         has_update = true;
       }
       break;
@@ -889,7 +908,7 @@ void update_display_from_can_data(void) {
         break;
       case 3:
         left_val  = max_values.ls_fuel_press_max * 0.1f / 6.895f;
-        right_val = max_values.di_fuel_press_max / 6.895f;
+        right_val = max_values.inj_duty_cycle_max;
         break;
       case 4:
         left_val  = max_values.ethanol_pct_max;
@@ -912,7 +931,7 @@ void update_display_from_can_data(void) {
         break;
       case 3:
         left_val  = left_val * 0.1f / 6.895f;
-        right_val = right_val / 6.895f;
+        right_val = right_val; // Already in % (x1)
         break;
       case 4:
         // left_val (ethanol) needs no scaling
@@ -928,17 +947,23 @@ void update_display_from_can_data(void) {
 void setup(void) {
   Serial.begin(115200);
   delay(100);
-  Serial.println("Setup starting...");
+  Serial.println("1: Serial init");
 
   // Create mutexes before starting any tasks
   display_data_mutex = xSemaphoreCreateMutex();
   
   // Load persistent data from NVS
   load_persistent_data();
+  Serial.println("2: NVS loaded");
   
-  drivers_init();  
-  set_backlight(40);  
+  drivers_init();
+  Serial.println("3: Drivers init");
+  
+  set_backlight(40);
+  Serial.println("4: Backlight set");
+  
   screens_init();
+  Serial.println("5: Screens init");
   
   // Update odometer/trip display with loaded values before boot screen shows
   delay(50); // Small delay to ensure LVGL is ready

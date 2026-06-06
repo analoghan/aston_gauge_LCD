@@ -81,8 +81,8 @@ Six status icons display on the right side of the screen, driven directly from M
 | Launch Control | 0x64E | buf[3] | bit 5 | Shows for 2s on startup, or while active (500ms timeout) |
 | 2-Step | 0x650 | buf[7] | bit 6 | Shows for 2s on startup, or while active (500ms timeout) |
 | Exhaust Bypass | 0x6A8 | buf[5] | full byte | Shows for 2s on startup, or while active (500ms timeout) |
-| Peak Recall | 0x673 B0=1 | - | - | Shows PeakRecall icon for 2s on startup or during max recall |
-| Clear Peak Recall | 0x673 B1=1 | - | - | Shows ClearPeakRecall icon for 2s when clearing max values |
+| Peak Recall | 0x178 | buf[1] | bit 7 | Short press: shows max values while held + 2s. Hold 3s: clears max for current screen |
+| Clear Peak Recall | 0x178 | buf[1] | bit 7 (3s hold) | ClearPeakRecall icon shown when max values are cleared |
 
 All status icons hide 500ms after the last active CAN message. The Peak Recall icon dynamically swaps between two images based on context (recall vs clear).
 
@@ -101,7 +101,7 @@ All messages are in the 0x600-0x6FF range. A hardware acceptance filter on the E
 | 0x64E | 1614 | TCS (B3 bit 4), Launch_Control (B3 bit 5) | bit flags |
 | 0x650 | 1616 | 2-Step (B7 bit 6) | bit flag |
 | 0x651 | 1617 | Exhaust_Lambda_Bank_1 (B2), Exhaust_Lambda_Bank_2 (B3) | ×0.01 LA → ×14.7 AFR |
-| 0x653 | 1619 | Fuel_Pressure_Direct_B1 (B0-1) | ×1 kPa → PSI |
+| 0x653 | 1619 | ~~Fuel_Pressure_Direct_B1~~ (removed - DI ECU only) | — |
 | 0x659 | 1625 | Vehicle_Speed (B4-5) | ×0.1 km/h → MPH |
 | 0x670 | 1648 | Fuel_Composition (B5) | ×1 % |
 | 0x6A8 | 1704 | Cruise_Control (B3), Exhaust_Bypass (B5) | full byte flags |
@@ -110,7 +110,7 @@ All messages are in the 0x600-0x6FF range. A hardware acceptance filter on the E
 
 | ID    | Description | Data Bytes |
 |-------|-------------|------------|
-| 0x673 | Peak recall / Clear max | B0: 1 = show max values, B1: 1 = clear max for current screen |
+| 0x178 | Peak recall button | B1 bit 7: 1 = held. Short press = show max, hold 3s = clear max for current screen |
 
 ## Architecture
 

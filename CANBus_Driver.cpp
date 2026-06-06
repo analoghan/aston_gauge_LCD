@@ -12,14 +12,9 @@ void canbus_init(void) {
     
     twai_timing_config_t t_config = TWAI_TIMING_CONFIG_500KBITS();
 
-    // Hardware filter: accept IDs 0x600-0x6FF
-    // Covers all ECU messages (0x640-0x670) and icon messages (0x64E, 0x650, 0x6A8)
-    // mask=0x700, code=0x600 accepts exactly 0x600-0x6FF
-    twai_filter_config_t f_config = {
-      .acceptance_code = ((uint32_t)0x600 << 21),
-      .acceptance_mask = ~((uint32_t)0x700 << 21),
-      .single_filter = true
-    };
+    // Hardware filter: accept all IDs (software filtering via switch statement)
+    // Needed because we listen to both 0x0B2 and 0x600-0x6FF ranges
+    twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
  
     // Install and start TWAI driver
     if (twai_driver_install(&g_config, &t_config, &f_config) == ESP_OK) {
