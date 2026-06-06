@@ -44,6 +44,21 @@ volatile unsigned long last_exhaust_bypass_time = 0;
 volatile bool icons_startup_shown = false;
 #define ICON_TIMEOUT_MS 500  // Hide icons after 500ms of no CAN data
 
+// ECU Warning state (from 0x64C)
+volatile uint8_t ecu_warning_flags = 0; // Bitmask of active warnings
+volatile unsigned long last_warning_time = 0;
+#define WARNING_TIMEOUT_MS 500 // Clear warning after 500ms of no updates
+
+// Warning flag bit positions
+#define WARN_FUEL_PRESSURE    (1 << 0)
+#define WARN_CRANKCASE_PRESS  (1 << 1)
+#define WARN_OIL_PRESSURE     (1 << 2)
+#define WARN_OIL_TEMP         (1 << 3)
+#define WARN_ENGINE_SPEED     (1 << 4)
+#define WARN_COOLANT_PRESSURE (1 << 5)
+#define WARN_COOLANT_TEMP     (1 << 6)
+#define WARN_KNOCK            (1 << 7)
+
 // ============================================================================
 // CAN DATA STRUCTURES
 // ============================================================================
@@ -632,6 +647,27 @@ void receive_can_task(void *arg) {
           break;
         }
 
+        case 0x64C: {
+          // ECU Warning flags from M1
+          // Byte 5 (data[5]): bit0=Fuel_Pressure, bit1=Crankcase_Pressure,
+          //   bit3=Oil_Pressure, bit4=Oil_Temp, bit5=Engine_Speed,
+          //   bit6=Coolant_Pressure, bit7=Coolant_Temp
+          // Byte 6 (data[6]): bit7=Knock
+          uint8_t flags = 0;
+          uint8_t b5 = message.data[5];
+          if (b5 & (1 << 0)) flags |= WARN_FUEL_PRESSURE;
+          if (b5 & (1 << 1)) flags |= WARN_CRANKCASE_PRESS;
+          if (b5 & (1 << 3)) flags |= WARN_OIL_PRESSURE;
+          if (b5 & (1 << 4)) flags |= WARN_OIL_TEMP;
+          if (b5 & (1 << 5)) flags |= WARN_ENGINE_SPEED;
+          if (b5 & (1 << 6)) flags |= WARN_COOLANT_PRESSURE;
+          if (b5 & (1 << 7)) flags |= WARN_COOLANT_TEMP;
+          if (message.data[6] & (1 << 7)) flags |= WARN_KNOCK;
+          ecu_warning_flags = flags;
+          last_warning_time = now_msg;
+          break;
+        }
+
         case 0x6A8: {
           if (message.data[3]) {
             cruise_active = true;
@@ -740,7 +776,13 @@ void update_display_values(uint8_t mode, float left_val, float right_val) {
       break;
       
     case 2: // MAP (PSI) and Speed (MPH) - no color thresholds
-    case 3: // Fuel pressures (PSI)
+      break;
+    case 3: // LS Fuel PSI and Injector Duty %
+      // Fuel pressure: red if low (<40 PSI) while engine is running (value > 0)
+      if (left_val > 0 && left_val < 40)         { left_r = 255; left_g = 0;   left_b = 0;   }
+      // Injector duty cycle: red if high (≥85%)
+      if (right_val >= 85)                        { right_r = 255; right_g = 0; right_b = 0;  }
+      break;
     case 4: // Ethanol (%) and Battery (V)
       break;
   }
@@ -931,7 +973,7 @@ void update_display_from_can_data(void) {
         break;
       case 3:
         left_val  = left_val * 0.1f / 6.895f;
-        right_val = right_val; // Already in % (x1)
+        // right_val already in % (x1), no conversion needed
         break;
       case 4:
         // left_val (ethanol) needs no scaling
@@ -984,6 +1026,68 @@ void setup(void) {
   // Don't update display here - will be done after boot screen in restore task
   
   Serial.println("Setup complete");
+}
+
+// Update ECU warning display (background color + warning text)
+void update_ecu_warnings() {
+  static uint8_t last_flags = 0;
+  static bool last_warning_active = false;
+  
+  unsigned long now = millis();
+  
+  // Timeout: clear warnings if no 0x64C message received recently
+  uint8_t flags = ecu_warning_flags;
+  if (last_warning_time > 0 && (now - last_warning_time > WARNING_TIMEOUT_MS)) {
+    flags = 0;
+  }
+  
+  lv_obj_t* warn_left = get_warning_label_left();
+  lv_obj_t* warn_right = get_warning_label_right();
+  lv_obj_t* screen = get_main_screen();
+  lv_obj_t* left_container = get_left_gauge_container();
+  lv_obj_t* right_container = get_right_gauge_container();
+  
+  if (warn_left == NULL || warn_right == NULL || screen == NULL ||
+      left_container == NULL || right_container == NULL) return;
+  
+  bool warning_active = (flags != 0);
+  
+  // Only update if state changed
+  if (flags == last_flags && warning_active == last_warning_active) return;
+  
+  if (warning_active) {
+    // Set background red on screen and both gauge containers
+    lv_obj_set_style_bg_color(screen, lv_color_make(80, 0, 0), 0);
+    lv_obj_set_style_bg_color(left_container, lv_color_make(80, 0, 0), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(right_container, lv_color_make(80, 0, 0), LV_PART_MAIN);
+    
+    // Build warning message — show highest priority warning
+    const char* warn_text = "";
+    if (flags & WARN_KNOCK)            warn_text = "Knock Retard Active";
+    else if (flags & WARN_OIL_PRESSURE)     warn_text = "Oil PSI Low";
+    else if (flags & WARN_FUEL_PRESSURE)    warn_text = "Fuel PSI Low";
+    else if (flags & WARN_COOLANT_TEMP)     warn_text = "Coolant Temp High";
+    else if (flags & WARN_OIL_TEMP)         warn_text = "Oil Temp High";
+    else if (flags & WARN_COOLANT_PRESSURE) warn_text = "Coolant PSI High";
+    else if (flags & WARN_CRANKCASE_PRESS)  warn_text = "Crankcase PSI High";
+    else if (flags & WARN_ENGINE_SPEED)     warn_text = "Engine RPM High";
+    
+    // Show same message on both gauges
+    lv_label_set_text(warn_left, warn_text);
+    lv_label_set_text(warn_right, warn_text);
+    lv_obj_clear_flag(warn_left, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(warn_right, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    // Clear: restore black background and hide labels
+    lv_obj_set_style_bg_color(screen, lv_color_make(0, 0, 0), 0);
+    lv_obj_set_style_bg_color(left_container, lv_color_make(0, 0, 0), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(right_container, lv_color_make(0, 0, 0), LV_PART_MAIN);
+    lv_obj_add_flag(warn_left, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(warn_right, LV_OBJ_FLAG_HIDDEN);
+  }
+  
+  last_flags = flags;
+  last_warning_active = warning_active;
 }
 
 // Update status icon visibility
@@ -1132,6 +1236,9 @@ void loop(void) {
   
   // Update status icon visibility
   update_status_icons();
+  
+  // Update ECU warning display
+  update_ecu_warnings();
   
   // Update data values
   update_display_from_can_data();

@@ -29,6 +29,11 @@ lv_obj_t* get_launch_icon(void);
 lv_obj_t* get_two_step_icon(void);
 lv_obj_t* get_exhaust_bypass_icon(void);
 lv_obj_t* get_peak_recall_icon(void);
+lv_obj_t* get_warning_label_left(void);
+lv_obj_t* get_warning_label_right(void);
+lv_obj_t* get_main_screen(void);
+lv_obj_t* get_left_gauge_container(void);
+lv_obj_t* get_right_gauge_container(void);
 uint8_t get_current_screen_mode(void);
 
 // Callback functions

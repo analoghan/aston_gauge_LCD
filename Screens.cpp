@@ -40,9 +40,18 @@ lv_obj_t *two_step_img = NULL;
 lv_obj_t *peak_recall_img = NULL;
 lv_obj_t *clear_peak_recall_img = NULL;
 
+// ECU Warning labels (one per gauge half)
+lv_obj_t *warning_label_left = NULL;
+lv_obj_t *warning_label_right = NULL;
+
+// Gauge containers (for background color control)
+lv_obj_t *left_gauge_container = NULL;
+lv_obj_t *right_gauge_container = NULL;
+
 // Reusable style objects
 static lv_style_t style_label_title;
 static lv_style_t style_label_value;
+static lv_style_t style_label_warning;
 static bool styles_initialized = false;
 
 // Current screen mode
@@ -65,6 +74,14 @@ void init_styles(void) {
   lv_style_set_transform_angle(&style_label_value, 900);
   lv_style_set_text_opa(&style_label_value, LV_OPA_COVER); // Full opacity for smoother rendering
   
+  // Style for warning labels (28pt custom font, red text, rotated, centered)
+  lv_style_init(&style_label_warning);
+  lv_style_set_text_font(&style_label_warning, &aston_28);
+  lv_style_set_text_color(&style_label_warning, lv_color_make(255, 0, 0));
+  lv_style_set_transform_angle(&style_label_warning, 900);
+  lv_style_set_text_opa(&style_label_warning, LV_OPA_COVER);
+  lv_style_set_text_align(&style_label_warning, LV_TEXT_ALIGN_CENTER);
+  
   styles_initialized = true;
 }
 
@@ -81,7 +98,7 @@ void main_scr_loaded_cb(lv_event_t *e)
 }
 
 // Helper function to create gauge containers (adjusted for 240px width)
-void create_gauge_containers(lv_obj_t *parent) {
+void create_gauge_containers(lv_obj_t *parent, bool store_refs) {
   lv_obj_t *left_gauge = lv_obj_create(parent);
   lv_obj_set_size(left_gauge, 238, 348);
   lv_obj_set_pos(left_gauge, 0, 0);
@@ -93,6 +110,11 @@ void create_gauge_containers(lv_obj_t *parent) {
   lv_obj_set_pos(right_gauge, 0, 582);
   lv_obj_set_style_bg_color(right_gauge, lv_color_make(0,0,0), LV_PART_MAIN);
   lv_obj_clear_flag(right_gauge, LV_OBJ_FLAG_SCROLLABLE);
+  
+  if (store_refs) {
+    left_gauge_container = left_gauge;
+    right_gauge_container = right_gauge;
+  }
 }
 
 // create the elements on the 1st splash screen
@@ -101,7 +123,7 @@ void boot_scr1_init(void)
   boot_scr1 = lv_obj_create(NULL);
   lv_obj_set_style_bg_color(boot_scr1, lv_color_make(0,0,0), 0);
 
-  create_gauge_containers(boot_scr1);
+  create_gauge_containers(boot_scr1, false);
 
   lv_obj_t *aston_img = lv_image_create(boot_scr1);
   lv_image_set_src(aston_img, &AstonLogo);
@@ -134,7 +156,7 @@ void main_scr_init(void) {
   main_scr = lv_obj_create(NULL);
   lv_obj_set_style_bg_color(main_scr, lv_color_make(0,0,0), 0);
 
-  create_gauge_containers(main_scr);
+  create_gauge_containers(main_scr, true);
 
   // Title labels for left and right gauges
   left_title_label = lv_label_create(main_scr);
@@ -207,6 +229,21 @@ void main_scr_init(void) {
   lv_label_set_text(trip_value, "0.0");
   lv_obj_set_pos(trip_value, 35, 782);
   lv_obj_add_style(trip_value, &style_label_title, 0);
+
+  // ECU Warning labels - positioned between data value (x=130) and odometer/trip (x=35)
+  warning_label_left = lv_label_create(main_scr);
+  lv_label_set_text(warning_label_left, "");
+  lv_obj_set_pos(warning_label_left, 80, 0);
+  lv_obj_set_width(warning_label_left, 348);
+  lv_obj_add_style(warning_label_left, &style_label_warning, 0);
+  lv_obj_add_flag(warning_label_left, LV_OBJ_FLAG_HIDDEN);
+
+  warning_label_right = lv_label_create(main_scr);
+  lv_label_set_text(warning_label_right, "");
+  lv_obj_set_pos(warning_label_right, 80, 582);
+  lv_obj_set_width(warning_label_right, 348);
+  lv_obj_add_style(warning_label_right, &style_label_warning, 0);
+  lv_obj_add_flag(warning_label_right, LV_OBJ_FLAG_HIDDEN);
   
   // Add callback for when main screen is loaded
   lv_obj_add_event_cb(main_scr, main_scr_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
@@ -299,6 +336,26 @@ lv_obj_t* get_peak_recall_icon(void) {
 
 uint8_t get_current_screen_mode(void) {
   return current_screen_mode;
+}
+
+lv_obj_t* get_warning_label_left(void) {
+  return warning_label_left;
+}
+
+lv_obj_t* get_warning_label_right(void) {
+  return warning_label_right;
+}
+
+lv_obj_t* get_main_screen(void) {
+  return main_scr;
+}
+
+lv_obj_t* get_left_gauge_container(void) {
+  return left_gauge_container;
+}
+
+lv_obj_t* get_right_gauge_container(void) {
+  return right_gauge_container;
 }
 
 // build the screens
