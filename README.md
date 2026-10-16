@@ -82,7 +82,7 @@ Priority, highest first:
 
 | Icon | CAN ID | Signal | Behavior |
 |------|--------|--------|----------|
-| Cruise Control | 0x6A8 | B3 (non-zero) | Shown while active (500 ms timeout) |
+| Cruise Control | 0x661 | Cruise_Enable = 1 or 2 | Shown while cruise (or Speed Limit) is enabled (500 ms timeout) |
 | Traction Control | 0x64E | B3 bit 4 | Shown while active (500 ms timeout) |
 | Launch Control | 0x64E | B3 bit 5 | Shown while active (500 ms timeout) |
 | 2-Step | 0x650 | B7 bit 6 | Shown while active (500 ms timeout) |
@@ -110,7 +110,7 @@ The TWAI controller accepts all IDs. Filtering is done in software in `receive_c
 | 0x659 | Vehicle_Speed (B4-5) | ×0.1 km/h |
 | 0x661 | Cruise_Enable (B0 bits 7-6), Cruise_State_On (B0 bit 5), Cruise_Speed_Display (B1 bits 3-0 + B2) | enum, flag, ×0.1 km/h |
 | 0x670 | Fuel_Composition (B5) | ×1 % |
-| 0x6A8 | Cruise control (B3), exhaust bypass (B5) | non-zero = active |
+| 0x6A8 | Exhaust bypass (B5) | non-zero = active |
 
 ## Odometer and Trip Meters
 

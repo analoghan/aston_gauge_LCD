@@ -30,7 +30,6 @@ unsigned long last_tca_check = 0;
 
 // Status Icon Control
 // millis() each status was last seen active on CAN (0 = never); icon shows within ICON_TIMEOUT_MS
-volatile unsigned long last_cruise_time = 0;
 volatile unsigned long last_tcs_time = 0;
 volatile unsigned long last_launch_time = 0;
 volatile unsigned long last_two_step_time = 0;
@@ -121,6 +120,7 @@ typedef struct {
 } ScreenDef;
 
 // Cruise is enabled (Cruise_Enable = Cruise Control or Speed Limit) with live 0x661 data.
+// Drives the cruise screen's availability and the cruise icon.
 // Updated by update_cruise_screen(); main loop only.
 bool cruise_available = false;
 
@@ -706,9 +706,6 @@ void receive_can_task(void *arg) {
         }
 
         case 0x6A8: {
-          if (message.data[3]) {
-            last_cruise_time = now_msg;
-          }
           if (message.data[5]) {
             last_exhaust_bypass_time = now_msg;
           }
@@ -1037,7 +1034,7 @@ void update_status_icons() {
   unsigned long now = millis();
   bool startup = (now - main_screen_loaded_time < ICON_STARTUP_SHOW_MS);
 
-  set_icon_visible(get_cruise_icon(),         startup || status_recent(last_cruise_time, now),         cruise_shown);
+  set_icon_visible(get_cruise_icon(),         startup || cruise_available,                             cruise_shown); // 0x661 Cruise_Enable
   set_icon_visible(get_tcs_icon(),            startup || status_recent(last_tcs_time, now),            tcs_shown);
   set_icon_visible(get_launch_icon(),         startup || status_recent(last_launch_time, now),         launch_shown);
   set_icon_visible(get_two_step_icon(),       startup || status_recent(last_two_step_time, now),       two_step_shown);
