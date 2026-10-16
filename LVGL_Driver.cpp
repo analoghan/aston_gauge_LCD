@@ -14,8 +14,11 @@
 #define DISPLAY_OFFSET_X 632  // ((960 - 120 pixel offset) - (240 display size))
 #define DISPLAY_OFFSET_Y 26
 
-static lv_color_t* buf1 = (lv_color_t*)heap_caps_aligned_alloc(32, (LVGL_WIDTH * LVGL_HEIGHT * 2) / BUFFER_FACTOR, MALLOC_CAP_DMA);
-static lv_color_t* buf2 = (lv_color_t*)heap_caps_aligned_alloc(32, (LVGL_WIDTH * LVGL_HEIGHT * 2) / BUFFER_FACTOR, MALLOC_CAP_DMA);
+// Size of each draw buffer in BYTES (RGB565 = 2 bytes/pixel). LVGL 9's lv_display_set_buffers takes bytes.
+#define LVGL_BUF_BYTES ((LVGL_WIDTH * LVGL_HEIGHT * 2) / BUFFER_FACTOR)
+
+static lv_color_t* buf1 = NULL;
+static lv_color_t* buf2 = NULL;
 
 /* Flush callback: Transfers LVGL-rendered area to the actual LCD with offset */
 void lvgl_flush_callback(lv_display_t *disp, const lv_area_t *area, uint8_t *color_p) {
@@ -30,15 +33,20 @@ void lvgl_init(void) {
   lv_init();
   lv_tick_set_cb(xTaskGetTickCount);
   
+  buf1 = (lv_color_t*)heap_caps_aligned_alloc(32, LVGL_BUF_BYTES, MALLOC_CAP_DMA);
+  buf2 = (lv_color_t*)heap_caps_aligned_alloc(32, LVGL_BUF_BYTES, MALLOC_CAP_DMA);
   if (!buf1) {
     printf("LVGL buffer allocation failed!\n");
     return;
+  }
+  if (!buf2) {
+    printf("LVGL second buffer allocation failed, using single buffering\n");
   }
 
   lv_display_t *disp_drv = lv_display_create(LVGL_WIDTH, LVGL_HEIGHT);
 
   /* Initialize the draw buffer with double buffering */
-  lv_display_set_buffers(disp_drv, buf1, buf2, (LVGL_WIDTH * LVGL_HEIGHT) / BUFFER_FACTOR, LV_DISPLAY_RENDER_MODE_PARTIAL);
+  lv_display_set_buffers(disp_drv, buf1, buf2, LVGL_BUF_BYTES, LV_DISPLAY_RENDER_MODE_PARTIAL);
 
   /* Set the display resolution to virtual size only - don't set physical resolution */
   lv_display_set_resolution(disp_drv, LVGL_WIDTH, LVGL_HEIGHT);

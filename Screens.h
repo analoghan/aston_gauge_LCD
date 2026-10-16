@@ -16,7 +16,7 @@ void screens_init(void);
 void init_styles(void);
 
 // Screen mode management
-void update_screen_labels(uint8_t mode);
+void update_screen_labels(uint8_t mode, const char *left_title, const char *right_title);
 lv_obj_t* get_left_value_label(void);
 lv_obj_t* get_right_value_label(void);
 lv_obj_t* get_left_title_label(void);
@@ -37,5 +37,6 @@ lv_obj_t* get_right_gauge_container(void);
 uint8_t get_current_screen_mode(void);
 
 // Callback functions
+void on_main_screen_loaded(void);  // Implemented in the main sketch
 void boot_scr1_loaded_cb(lv_event_t *e);
 void main_scr_loaded_cb(lv_event_t *e);

@@ -55,7 +55,7 @@ static lv_style_t style_label_warning;
 static bool styles_initialized = false;
 
 // Current screen mode
-static uint8_t current_screen_mode = 0; // 0=temp/oil, 1=AFR, 2=pressures, 3=fuel, 4=ethanol/battery
+static uint8_t current_screen_mode = 0; // Index into SCREENS in the main sketch
 
 void init_styles(void) {
   if (styles_initialized) return;
@@ -94,7 +94,7 @@ void boot_scr1_loaded_cb(lv_event_t *e)
 // Callback when main screen is loaded (after boot screen)
 void main_scr_loaded_cb(lv_event_t *e)
 {
-  // Main screen loaded - restore task will handle mode restoration
+  on_main_screen_loaded();
 }
 
 // Helper function to create gauge containers (adjusted for 240px width)
@@ -249,32 +249,12 @@ void main_scr_init(void) {
   lv_obj_add_event_cb(main_scr, main_scr_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 }
 
-// Update screen mode labels and reset values
-void update_screen_labels(uint8_t mode) {
+// Update screen mode titles and reset values (titles come from the SCREENS table in the sketch)
+void update_screen_labels(uint8_t mode, const char *left_title, const char *right_title) {
   current_screen_mode = mode;
   
-  switch (mode) {
-    case 0:
-      lv_label_set_text(left_title_label, "ECT °F");
-      lv_label_set_text(right_title_label, "Oil PSI");
-      break;
-    case 1:
-      lv_label_set_text(left_title_label, "AFR B1");
-      lv_label_set_text(right_title_label, "AFR B2");
-      break;
-    case 2:
-      lv_label_set_text(left_title_label, "MAP PSI");
-      lv_label_set_text(right_title_label, "Speed MPH");
-      break;
-    case 3:
-      lv_label_set_text(left_title_label, "LS Fuel PSI");
-      lv_label_set_text(right_title_label, "Inj Duty %");
-      break;
-    case 4:
-      lv_label_set_text(left_title_label, "Ethanol %");
-      lv_label_set_text(right_title_label, "Battery V");
-      break;
-  }
+  lv_label_set_text(left_title_label, left_title);
+  lv_label_set_text(right_title_label, right_title);
   
   // Reset value labels to 0 when changing modes
   lv_label_set_text(left_label_value, "   0");

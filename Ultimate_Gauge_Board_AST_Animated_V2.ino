@@ -31,17 +31,14 @@ unsigned long last_tca_check = 0;
 #define TCA_CHECK_INTERVAL_MS 50  // Check every 50ms
 
 // Status Icon Control
-volatile bool cruise_active = false;
-volatile bool tcs_active = false;
-volatile bool launch_active = false;
-volatile bool two_step_active = false;
-volatile bool exhaust_bypass_active = false;
+// millis() each status was last seen active on CAN (0 = never); icon shows within ICON_TIMEOUT_MS
 volatile unsigned long last_cruise_time = 0;
 volatile unsigned long last_tcs_time = 0;
 volatile unsigned long last_launch_time = 0;
 volatile unsigned long last_two_step_time = 0;
 volatile unsigned long last_exhaust_bypass_time = 0;
-volatile bool icons_startup_shown = false;
+unsigned long main_screen_loaded_time = 0; // 0 = still on boot screen
+#define ICON_STARTUP_SHOW_MS 2000  // Show all icons for 2s after the main screen loads
 #define ICON_TIMEOUT_MS 500  // Hide icons after 500ms of no CAN data
 
 // ECU Warning state (from 0x64C)
@@ -63,72 +60,103 @@ volatile unsigned long last_warning_time = 0;
 // CAN DATA STRUCTURES
 // ============================================================================
 
-// Thread-safe data structure for passing CAN data to UI
-// Raw values stored as received from M1 ECU (pre-scaling)
+// Every value shown on a gauge. Raw values are stored as received from the M1 ECU (pre-scaling).
+enum SignalId {
+  SIG_COOLANT_TEMP,   // 0x649 B0,    x1 -40 offset → °C
+  SIG_OIL_PRESS,      // 0x644 B6-7,  x0.1 kPa
+  SIG_LAMBDA_B1,      // 0x651 B2,    x0.01 LA
+  SIG_LAMBDA_B2,      // 0x651 B3,    x0.01 LA
+  SIG_MAP,            // 0x640 B2-3,  x0.1 kPa absolute
+  SIG_SPEED,          // 0x659 B4-5,  x0.1 km/h
+  SIG_FUEL_PRESS,     // 0x641 B4-5,  x0.1 kPa
+  SIG_INJ_DUTY,       // 0x641 B6,    x1 %
+  SIG_ETHANOL,        // 0x670 B5,    x1 %
+  SIG_BATTERY,        // 0x649 B5,    x0.1 V
+  SIG_COUNT
+};
+
+// Live state of one signal. Shared between CAN task and main loop: hold display_data_mutex.
 typedef struct {
-  // 0x649: Coolant temp (B0, x1 -40 offset, °C), Oil temp (B2), Battery volts (B5, x0.1 V)
-  uint8_t  coolant_temp_raw;    // x1, -40 offset → °C
-  uint8_t  battery_volts_raw;   // x0.1 → V
-  bool     updated_0x649;
-  unsigned long last_update_0x649;
+  uint16_t raw;                 // Latest raw value
+  uint16_t max;                 // Peak raw value (for peak recall)
+  bool     updated;             // New data since the display last consumed it
+  unsigned long last_update;    // millis() of last CAN update (0 = never received)
+} SignalState;
 
-  // 0x644: Engine oil pressure (B4-5, x0.1 kPa)
-  uint16_t oil_press_raw;       // x0.1 kPa → PSI (/6.895)
-  bool     updated_0x644;
-  unsigned long last_update_0x644;
-
-  // 0x651: Lambda Bank 1 (B2, x0.01 LA), Lambda Bank 2 (B3, x0.01 LA)
-  uint8_t  lambda_bank1_raw;    // x0.01 → AFR (x14.7)
-  uint8_t  lambda_bank2_raw;    // x0.01 → AFR (x14.7)
-  bool     updated_0x651;
-  unsigned long last_update_0x651;
-
-  // 0x640: Engine speed (B0-1, x1 RPM), MAP (B2-3, x0.1 kPa)
-  uint16_t map_raw;             // x0.1 kPa → PSI (/6.895)
-  bool     updated_0x640;
-  unsigned long last_update_0x640;
-
-  // 0x659: Vehicle speed (B4-5, x0.1 km/h)
-  uint16_t speed_raw;           // x0.1 km/h → MPH (/1.60934)
-  bool     updated_0x659;
-  unsigned long last_update_0x659;
-
-  // 0x641: Low side fuel pressure (B4-5, x0.1 kPa)
-  uint16_t ls_fuel_press_raw;   // x0.1 kPa → PSI (/6.895)
-  bool     updated_0x641;
-  unsigned long last_update_0x641;
-
-  // 0x641: Fuel Injector Primary Duty Cycle (B6, x1 %)
-  uint8_t  inj_duty_cycle_raw;  // x1 → %
-  bool     updated_0x641_duty;
-  unsigned long last_update_0x641_duty;
-
-  // 0x670: Ethanol/fuel composition (B5, x1 %)
-  uint8_t  ethanol_pct_raw;     // x1 → %
-  bool     updated_0x670;
-  unsigned long last_update_0x670;
-} DisplayData;
-
-volatile DisplayData display_data = {};
+SignalState signals[SIG_COUNT] = {};
 SemaphoreHandle_t display_data_mutex = NULL;
 
 #define CAN_DATA_TIMEOUT_MS 500 // Reset values after 500ms of no updates
 
-// Max value tracking (same types as DisplayData raw values)
-typedef struct {
-  uint8_t  coolant_temp_max;
-  uint16_t oil_press_max;
-  uint8_t  lambda_bank1_max;
-  uint8_t  lambda_bank2_max;
-  uint16_t map_max;
-  uint16_t speed_max;
-  uint16_t ls_fuel_press_max;
-  uint8_t  inj_duty_cycle_max;
-  uint8_t  ethanol_pct_max;
-  uint8_t  battery_volts_max;
-} MaxValues;
+// Raw value a signal falls back to after CAN_DATA_TIMEOUT_MS of silence (coolant raw 40 = 0°C)
+#define SIGNAL_TIMEOUT_RAW(id) ((id) == SIG_COOLANT_TEMP ? 40 : 0)
 
-volatile MaxValues max_values = {};
+// ============================================================================
+// SCREEN DEFINITIONS
+// ============================================================================
+
+#define COLOR_WHITE lv_color_hex(0xFFFFFF)
+#define COLOR_RED   lv_color_hex(0xFF0000)
+#define COLOR_GREEN lv_color_hex(0x00FF00)
+#define COLOR_BLUE  lv_color_hex(0x0000FF)
+
+// One half of the display: what it shows and how
+typedef struct {
+  const char *title;
+  SignalId    signal;
+  float     (*scale)(float raw);      // Raw CAN value → display units
+  uint8_t     decimals;               // 0 = integer, 1 = one decimal place
+  lv_color_t (*color)(float value);   // Text color for a scaled value (NULL = always white)
+} GaugeDef;
+
+typedef struct {
+  GaugeDef left;
+  GaugeDef right;
+} ScreenDef;
+
+// Lambdas rather than functions: the Arduino IDE inserts auto-generated prototypes above
+// the first function in the sketch, which must come after these type definitions.
+static lv_color_t (*const afr_color)(float) = [](float v) {
+  if (v <= 0) return COLOR_WHITE;
+  return (v < 12 || v > 16) ? COLOR_RED : COLOR_GREEN;
+};
+
+// Screen order here is the cycle order, and the index is the saved screen mode
+static const ScreenDef SCREENS[] = {
+  { // 0: Coolant temp / oil pressure
+    { "ECT °F",      SIG_COOLANT_TEMP, [](float r) { return (r - 40) * 9.0f / 5.0f + 32.0f; }, 0,
+      [](float v) { return (v > 0 && v < 100) ? COLOR_BLUE : (v >= 210) ? COLOR_RED : COLOR_WHITE; } },
+    { "Oil PSI",     SIG_OIL_PRESS,    [](float r) { return r * 0.1f / 6.895f; }, 0,
+      [](float v) { return (v > 0 && v < 20) ? COLOR_RED : COLOR_WHITE; } },
+  },
+  { // 1: AFR (Lambda × 14.7), green 12-16, red otherwise
+    { "AFR B1",      SIG_LAMBDA_B1,    [](float r) { return r * 0.01f * 14.7f; }, 1, afr_color },
+    { "AFR B2",      SIG_LAMBDA_B2,    [](float r) { return r * 0.01f * 14.7f; }, 1, afr_color },
+  },
+  { // 2: Boost / speed
+    { "MAP PSI",     SIG_MAP,          [](float r) { return (r * 0.1f - 105.0f) / 6.895f; }, 1, NULL }, // -105 kPa offset → gauge PSI
+    { "Speed MPH",   SIG_SPEED,        [](float r) { return r * 0.1f / 1.60934f; }, 0, NULL },
+  },
+  { // 3: Fuel pressure / injector duty
+    { "LS Fuel PSI", SIG_FUEL_PRESS,   [](float r) { return r * 0.1f / 6.895f; }, 0,
+      [](float v) { return (v > 0 && v < 40) ? COLOR_RED : COLOR_WHITE; } },  // Low while running
+    { "Inj Duty %",  SIG_INJ_DUTY,     [](float r) { return r; }, 0,
+      [](float v) { return (v >= 85) ? COLOR_RED : COLOR_WHITE; } },
+  },
+  { // 4: Ethanol / battery
+    { "Ethanol %",   SIG_ETHANOL,      [](float r) { return r; }, 0, NULL },
+    { "Battery V",   SIG_BATTERY,      [](float r) { return r * 0.1f; }, 1, NULL },
+  },
+};
+
+const uint8_t NUM_SCREENS = sizeof(SCREENS) / sizeof(SCREENS[0]);
+
+// Last value/color written to a gauge's label, so LVGL is only touched on change
+typedef struct {
+  float      value;
+  lv_color_t color;
+  bool       valid;
+} GaugeCache;
 
 // Screen navigation pending flags (set from CAN task, consumed in main loop)
 volatile bool screen_next_pending = false;
@@ -158,7 +186,6 @@ portMUX_TYPE odometer_mux = portMUX_INITIALIZER_UNLOCKED;
 TaskHandle_t save_task_handle = NULL; // Notify this task to request an immediate NVS save
 uint8_t last_screen_mode = 0;
 uint8_t current_trip_display = 1; // 1 or 2, always starts at 1
-bool restore_mode_pending = false; // Flag to trigger mode restore from main loop
 
 // ============================================================================
 // ODOMETER TRACKING
@@ -348,28 +375,16 @@ void process_trip_switch() {
   }
 }
 
-// Task to restore screen mode after boot screen completes
-void restore_screen_mode_task(void *arg) {
-  // Wait for boot screen to complete (4 seconds + small buffer)
-  vTaskDelay(pdMS_TO_TICKS(4100));
-  
-  // Set flag to trigger mode restore from main loop (LVGL-safe)
-  restore_mode_pending = true;
-  
-  Serial.printf("Boot complete, will restore mode to %d\n", last_screen_mode);
-  
-  // Wait a bit more for main screen to fully load, then trigger odometer display update
-  vTaskDelay(pdMS_TO_TICKS(200));
+// Called from Screens.cpp when the main screen finishes loading after the boot screen
+// (LV_EVENT_SCREEN_LOADED, so this runs in the LVGL/main loop context)
+void on_main_screen_loaded() {
+  Serial.printf("Boot complete, restoring mode %d\n", last_screen_mode);
+  show_screen(last_screen_mode);
+
   force_odometer_refresh = true;  // Bypass cache — screen just loaded fresh
-  odometer_display_pending = true;
-  
-  // Show icons for 2 seconds on startup
-  icons_startup_shown = true;
-  vTaskDelay(pdMS_TO_TICKS(2000));
-  icons_startup_shown = false;
-  
-  // Task is done, delete itself
-  vTaskDelete(NULL);
+  update_odometer_display();
+
+  main_screen_loaded_time = millis();  // Starts the startup icon display
 }
 
 // Task to calculate distance traveled and update odometer/trip
@@ -480,6 +495,20 @@ void watchdog_task(void *arg) {
   }
 }
 
+// Big-endian 16-bit value from two CAN bytes (M1 signals are Motorola byte order)
+static inline uint16_t be16(const uint8_t *bytes) {
+  return ((uint16_t)bytes[0] << 8) | bytes[1];
+}
+
+// Store a new raw reading and track its peak. Caller must hold display_data_mutex.
+void update_signal(SignalId id, uint16_t raw, unsigned long now) {
+  SignalState &sig = signals[id];
+  sig.raw = raw;
+  sig.updated = true;
+  sig.last_update = now;
+  if (raw > sig.max) sig.max = raw;
+}
+
 void receive_can_task(void *arg) {
   while (!can_initiated) {
     vTaskDelay(pdMS_TO_TICKS(100));
@@ -542,78 +571,44 @@ void receive_can_task(void *arg) {
       switch (message.identifier) {
         // ---- M1 ECU native messages ----
 
-        case 0x640: {
-          // Inlet_Manifold_Pressure: bit 23|16@0+ = B2-B3
-          uint16_t map_raw = ((uint16_t)message.data[2] << 8) | message.data[3];
-          display_data.map_raw = map_raw;
-          display_data.updated_0x640 = true;
-          display_data.last_update_0x640 = now_msg;
-          if (map_raw > max_values.map_max) max_values.map_max = map_raw;
+        case 0x640:
+          // Inlet_Manifold_Pressure: bit 23|16@0+ = B2-B3, x0.1 kPa
+          update_signal(SIG_MAP, be16(&message.data[2]), now_msg);
           break;
-        }
 
-        case 0x641: {
+        case 0x641:
           // Fuel_Pressure_Sensor: bit 39|16@0+ = B4-B5, x0.1 kPa
-          uint16_t ls_raw = ((uint16_t)message.data[4] << 8) | message.data[5];
-          display_data.ls_fuel_press_raw = ls_raw;
-          display_data.updated_0x641 = true;
-          display_data.last_update_0x641 = now_msg;
-          if (ls_raw > max_values.ls_fuel_press_max) max_values.ls_fuel_press_max = ls_raw;
+          update_signal(SIG_FUEL_PRESS, be16(&message.data[4]), now_msg);
           // Fuel_Injector_Primary_Duty_Cycle: bit 55|8@0+ = B6, x1 %
-          uint8_t duty_raw = message.data[6];
-          display_data.inj_duty_cycle_raw = duty_raw;
-          display_data.updated_0x641_duty = true;
-          display_data.last_update_0x641_duty = now_msg;
-          if (duty_raw > max_values.inj_duty_cycle_max) max_values.inj_duty_cycle_max = duty_raw;
+          update_signal(SIG_INJ_DUTY, message.data[6], now_msg);
           break;
-        }
 
-        case 0x644: {
+        case 0x644:
           // Engine_Oil_Pressure: bit 55|16@0+ = B6-B7, x0.1 kPa
-          uint16_t op_raw = ((uint16_t)message.data[6] << 8) | message.data[7];
-          display_data.oil_press_raw = op_raw;
-          display_data.updated_0x644 = true;
-          display_data.last_update_0x644 = now_msg;
-          if (op_raw > max_values.oil_press_max) max_values.oil_press_max = op_raw;
+          update_signal(SIG_OIL_PRESS, be16(&message.data[6]), now_msg);
           break;
-        }
 
-        case 0x649: {
-          display_data.coolant_temp_raw = message.data[0];
-          display_data.battery_volts_raw = message.data[5];
-          display_data.updated_0x649 = true;
-          display_data.last_update_0x649 = now_msg;
-          if (message.data[0] > max_values.coolant_temp_max) max_values.coolant_temp_max = message.data[0];
-          if (message.data[5] > max_values.battery_volts_max) max_values.battery_volts_max = message.data[5];
+        case 0x649:
+          // Coolant_Temperature: B0, x1 -40 °C; ECU_Battery_Voltage: B5, x0.1 V
+          update_signal(SIG_COOLANT_TEMP, message.data[0], now_msg);
+          update_signal(SIG_BATTERY, message.data[5], now_msg);
           break;
-        }
 
-        case 0x651: {
-          display_data.lambda_bank1_raw = message.data[2];
-          display_data.lambda_bank2_raw = message.data[3];
-          display_data.updated_0x651 = true;
-          display_data.last_update_0x651 = now_msg;
-          if (message.data[2] > max_values.lambda_bank1_max) max_values.lambda_bank1_max = message.data[2];
-          if (message.data[3] > max_values.lambda_bank2_max) max_values.lambda_bank2_max = message.data[3];
+        case 0x651:
+          // Exhaust_Lambda_Bank_1: B2, Exhaust_Lambda_Bank_2: B3, x0.01 LA
+          update_signal(SIG_LAMBDA_B1, message.data[2], now_msg);
+          update_signal(SIG_LAMBDA_B2, message.data[3], now_msg);
           break;
-        }
 
-        case 0x659: {
-          uint16_t spd_raw = ((uint16_t)message.data[4] << 8) | message.data[5];
-          display_data.speed_raw = spd_raw;
-          display_data.updated_0x659 = true;
-          display_data.last_update_0x659 = now_msg;
-          if (spd_raw > max_values.speed_max) max_values.speed_max = spd_raw;
+        case 0x659:
+          // Vehicle_Speed: bit 39|16@0+ = B4-B5, x0.1 km/h
+          update_signal(SIG_SPEED, be16(&message.data[4]), now_msg);
           break;
-        }
 
-        case 0x670: {
-          display_data.ethanol_pct_raw = message.data[5];
-          display_data.updated_0x670 = true;
-          display_data.last_update_0x670 = now_msg;
-          if (message.data[5] > max_values.ethanol_pct_max) max_values.ethanol_pct_max = message.data[5];
+        case 0x670:
+          // Fuel_Composition: B5, x1 %
+          update_signal(SIG_ETHANOL, message.data[5], now_msg);
           break;
-        }
 
         case 0x17C: {
           // Screen navigation: byte 1, bit 4 = next screen, bit 5 = prev screen.
@@ -646,29 +641,9 @@ void receive_can_task(void *arg) {
             if (!max_recall_cleared_this_press && 
                 (now_msg - max_recall_button_press_start >= MAX_CLEAR_HOLD_MS)) {
               // 3 seconds held - clear max values for current screen
-              uint8_t current_mode = get_current_screen_mode();
-              switch (current_mode) {
-                case 0:
-                  max_values.coolant_temp_max = 0;
-                  max_values.oil_press_max = 0;
-                  break;
-                case 1:
-                  max_values.lambda_bank1_max = 0;
-                  max_values.lambda_bank2_max = 0;
-                  break;
-                case 2:
-                  max_values.map_max = 0;
-                  max_values.speed_max = 0;
-                  break;
-                case 3:
-                  max_values.ls_fuel_press_max = 0;
-                  max_values.inj_duty_cycle_max = 0;
-                  break;
-                case 4:
-                  max_values.ethanol_pct_max = 0;
-                  max_values.battery_volts_max = 0;
-                  break;
-              }
+              const ScreenDef &screen = SCREENS[get_current_screen_mode()];
+              signals[screen.left.signal].max = 0;
+              signals[screen.right.signal].max = 0;
               max_clear_active = true;
               max_recall_start_time = now_msg;
               max_recall_cleared_this_press = true;
@@ -687,11 +662,9 @@ void receive_can_task(void *arg) {
 
         case 0x64E: {
           if ((message.data[3] >> 5) & 0x01) {
-            launch_active = true;
             last_launch_time = now_msg;
           }
           if ((message.data[3] >> 4) & 0x01) {
-            tcs_active = true;
             last_tcs_time = now_msg;
           }
           break;
@@ -699,7 +672,6 @@ void receive_can_task(void *arg) {
 
         case 0x650: {
           if ((message.data[7] >> 6) & 0x01) {
-            two_step_active = true;
             last_two_step_time = now_msg;
           }
           break;
@@ -728,11 +700,9 @@ void receive_can_task(void *arg) {
 
         case 0x6A8: {
           if (message.data[3]) {
-            cruise_active = true;
             last_cruise_time = now_msg;
           }
           if (message.data[5]) {
-            exhaust_bypass_active = true;
             last_exhaust_bypass_time = now_msg;
           }
           break;
@@ -742,7 +712,7 @@ void receive_can_task(void *arg) {
 
       // Update current_speed_x10 outside the critical section (avoids nested lock with speed_mutex)
       if (message.identifier == 0x659) {
-        uint16_t spd_raw = ((uint16_t)message.data[4] << 8) | message.data[5];
+        uint16_t spd_raw = be16(&message.data[4]);
         portENTER_CRITICAL(&speed_mutex);
         // raw is 0.1 km/h, so raw / 1.60934 = tenths of MPH
         current_speed_x10 = (uint16_t)(spd_raw / 1.60934f + 0.5f);
@@ -768,125 +738,37 @@ void receive_can_task(void *arg) {
   }
 }
 
-// Scale and format a float value for display (1 decimal place)
-void format_float_value(char* buffer, float value) {
-  // Right-align in 5 chars to accommodate decimals e.g. " 14.7"
-  char temp[10];
-  sprintf(temp, "%.1f", value);
-  int len = strlen(temp);
-  int padding = 5 - len;
-  if (padding < 0) padding = 0;
-  int i;
-  for (i = 0; i < padding; i++) buffer[i] = ' ';
-  strcpy(buffer + padding, temp);
-}
+// Format, color, and write one gauge value to its label (skips unchanged text/color)
+void update_gauge_label(lv_obj_t *label, GaugeCache &cache, const GaugeDef &gauge, float value) {
+  lv_color_t color = gauge.color ? gauge.color(value) : COLOR_WHITE;
 
-// Helper function to format integer value with leading padding (4 chars, right-aligned)
-void format_value_with_padding(char* buffer, int value) {
-  char temp[8];
-  sprintf(temp, "%d", value);
-  int len = strlen(temp);
-  int padding = 4 - len;
-  if (padding < 0) padding = 0;
-  int i;
-  for (i = 0; i < padding; i++) buffer[i] = ' ';
-  strcpy(buffer + padding, temp);
-}
-
-void update_display_values(uint8_t mode, float left_val, float right_val) {
-  static float last_left = -9999;
-  static float last_right = -9999;
-  static uint8_t last_left_r = 255, last_left_g = 255, last_left_b = 255;
-  static uint8_t last_right_r = 255, last_right_g = 255, last_right_b = 255;
-  static uint8_t last_mode = 255;
-  
-  if (mode != last_mode) {
-    last_left = -9999;
-    last_right = -9999;
-    last_left_r = 255; last_left_g = 255; last_left_b = 255;
-    last_right_r = 255; last_right_g = 255; last_right_b = 255;
-    last_mode = mode;
-  }
-  
-  lv_obj_t *left_label = get_left_value_label();
-  lv_obj_t *right_label = get_right_value_label();
-  
-  uint8_t left_r = 255, left_g = 255, left_b = 255;
-  uint8_t right_r = 255, right_g = 255, right_b = 255;
-  
-  switch (mode) {
-    case 0: // Coolant temp (°F) and oil pressure (PSI)
-      // Coolant: blue if cold (<100°F), red if hot (≥210°F)
-      if (left_val > 0 && left_val < 100)       { left_r = 0;   left_g = 0;   left_b = 255; }
-      else if (left_val >= 210)                  { left_r = 255; left_g = 0;   left_b = 0;   }
-      // Oil: red if low (<20 PSI)
-      if (right_val > 0 && right_val < 20)       { right_r = 255; right_g = 0; right_b = 0;  }
-      break;
-      
-    case 1: // AFR (Lambda × 14.7) - green 12-16, red otherwise
-      if (left_val > 0) {
-        if (left_val < 12 || left_val > 16)      { left_r = 255; left_g = 0;   left_b = 0;   }
-        else                                      { left_r = 0;   left_g = 255; left_b = 0;   }
-      }
-      if (right_val > 0) {
-        if (right_val < 12 || right_val > 16)    { right_r = 255; right_g = 0; right_b = 0;  }
-        else                                      { right_r = 0;   right_g = 255; right_b = 0;}
-      }
-      break;
-      
-    case 2: // MAP (PSI) and Speed (MPH) - no color thresholds
-      break;
-    case 3: // LS Fuel PSI and Injector Duty %
-      // Fuel pressure: red if low (<40 PSI) while engine is running (value > 0)
-      if (left_val > 0 && left_val < 40)         { left_r = 255; left_g = 0;   left_b = 0;   }
-      // Injector duty cycle: red if high (≥85%)
-      if (right_val >= 85)                        { right_r = 255; right_g = 0; right_b = 0;  }
-      break;
-    case 4: // Ethanol (%) and Battery (V)
-      break;
-  }
-  
-  // Update left label
-  if (left_val != last_left) {
-    char text[10];
-    // Integer display for ECT, LS Fuel PSI, Ethanol %
-    if (mode == 0 || mode == 3 || mode == 4) {
-      format_value_with_padding(text, (int)left_val);
+  if (!cache.valid || value != cache.value) {
+    // Right-aligned so digits don't shift: 4 chars for integers ("   0"), 5 for decimals (" 14.7")
+    char text[12];
+    if (gauge.decimals == 0) {
+      snprintf(text, sizeof(text), "%4d", (int)value);
     } else {
-      format_float_value(text, left_val);
+      snprintf(text, sizeof(text), "%5.1f", value);
     }
-    lv_label_set_text(left_label, text);
-    last_left = left_val;
+    lv_label_set_text(label, text);
+    cache.value = value;
   }
-  if (left_r != last_left_r || left_g != last_left_g || left_b != last_left_b) {
-    lv_obj_set_style_text_color(left_label, lv_color_make(left_r, left_g, left_b), LV_PART_MAIN);
-    last_left_r = left_r; last_left_g = left_g; last_left_b = left_b;
+  if (!cache.valid || !lv_color_eq(color, cache.color)) {
+    lv_obj_set_style_text_color(label, color, LV_PART_MAIN);
+    cache.color = color;
   }
-  
-  // Update right label
-  if (right_val != last_right) {
-    char text[10];
-    // Integer display for Oil PSI, Speed, DI Fuel PSI
-    if (mode == 0 || mode == 2 || mode == 3) {
-      format_value_with_padding(text, (int)right_val);
-    } else {
-      format_float_value(text, right_val);
-    }
-    lv_label_set_text(right_label, text);
-    last_right = right_val;
-  }
-  if (right_r != last_right_r || right_g != last_right_g || right_b != last_right_b) {
-    lv_obj_set_style_text_color(right_label, lv_color_make(right_r, right_g, right_b), LV_PART_MAIN);
-    last_right_r = right_r; last_right_g = right_g; last_right_b = right_b;
-  }
+  cache.valid = true;
 }
 
 void update_display_from_can_data(void) {
   static unsigned long last_update_time = 0;
+  static GaugeCache left_cache = {}, right_cache = {};
+  static uint8_t last_mode = 255;
   const unsigned long UPDATE_INTERVAL_MS = 100;
   
   unsigned long now = millis();
   if (now - last_update_time < UPDATE_INTERVAL_MS) return;
+  last_update_time = now;
   
   // Expire max recall (only when button is not held)
   if (max_recall_active && !max_recall_button_held && 
@@ -895,98 +777,45 @@ void update_display_from_can_data(void) {
     max_clear_active = false;
   }
   
-  float left_val = 0.0f, right_val = 0.0f;
-  bool has_update = false;
   uint8_t mode = get_current_screen_mode();
+  const ScreenDef &screen = SCREENS[mode];
 
-  // --- Snapshot display_data under mutex, no nested locks ---
+  // update_screen_labels() resets the labels on a mode change, so the cache is stale
+  if (mode != last_mode) {
+    left_cache.valid = false;
+    right_cache.valid = false;
+    last_mode = mode;
+  }
+
+  uint16_t left_raw = 0, right_raw = 0;
+  bool has_update = false;
+
+  // --- Snapshot signals under mutex, no nested locks ---
   xSemaphoreTake(display_data_mutex, portMAX_DELAY);
 
-  // Timeout checks
-  if (display_data.last_update_0x649 > 0 && now - display_data.last_update_0x649 > CAN_DATA_TIMEOUT_MS) {
-    display_data.coolant_temp_raw = 40;
-    display_data.battery_volts_raw = 0;
-    display_data.updated_0x649 = true;
-  }
-  if (display_data.last_update_0x644 > 0 && now - display_data.last_update_0x644 > CAN_DATA_TIMEOUT_MS) {
-    display_data.oil_press_raw = 0;
-    display_data.updated_0x644 = true;
-  }
-  if (display_data.last_update_0x651 > 0 && now - display_data.last_update_0x651 > CAN_DATA_TIMEOUT_MS) {
-    display_data.lambda_bank1_raw = 0;
-    display_data.lambda_bank2_raw = 0;
-    display_data.updated_0x651 = true;
-  }
-  if (display_data.last_update_0x640 > 0 && now - display_data.last_update_0x640 > CAN_DATA_TIMEOUT_MS) {
-    display_data.map_raw = 0;
-    display_data.updated_0x640 = true;
-  }
-  if (display_data.last_update_0x659 > 0 && now - display_data.last_update_0x659 > CAN_DATA_TIMEOUT_MS) {
-    display_data.speed_raw = 0;
-    display_data.updated_0x659 = true;
-    portENTER_CRITICAL(&speed_mutex);
-    current_speed_x10 = 0;
-    portEXIT_CRITICAL(&speed_mutex);
-  }
-  if (display_data.last_update_0x641 > 0 && now - display_data.last_update_0x641 > CAN_DATA_TIMEOUT_MS) {
-    display_data.ls_fuel_press_raw = 0;
-    display_data.updated_0x641 = true;
-  }
-  if (display_data.last_update_0x641_duty > 0 && now - display_data.last_update_0x641_duty > CAN_DATA_TIMEOUT_MS) {
-    display_data.inj_duty_cycle_raw = 0;
-    display_data.updated_0x641_duty = true;
-  }
-  if (display_data.last_update_0x670 > 0 && now - display_data.last_update_0x670 > CAN_DATA_TIMEOUT_MS) {
-    display_data.ethanol_pct_raw = 0;
-    display_data.updated_0x670 = true;
+  // Fall back to the timeout value for any signal that has gone quiet
+  for (int i = 0; i < SIG_COUNT; i++) {
+    SignalState &sig = signals[i];
+    if (sig.last_update > 0 && now - sig.last_update > CAN_DATA_TIMEOUT_MS) {
+      sig.raw = SIGNAL_TIMEOUT_RAW(i);
+      sig.updated = true;
+      if (i == SIG_SPEED) {
+        // Stop the odometer accumulating at the last known speed
+        portENTER_CRITICAL(&speed_mutex);
+        current_speed_x10 = 0;
+        portEXIT_CRITICAL(&speed_mutex);
+      }
+    }
   }
 
-  // Snapshot the values we need for this screen
-  switch (mode) {
-    case 0:
-      if (display_data.updated_0x649 || display_data.updated_0x644 || max_recall_active) {
-        left_val  = display_data.coolant_temp_raw;
-        right_val = display_data.oil_press_raw;
-        display_data.updated_0x649 = false;
-        display_data.updated_0x644 = false;
-        has_update = true;
-      }
-      break;
-    case 1:
-      if (display_data.updated_0x651 || max_recall_active) {
-        left_val  = display_data.lambda_bank1_raw;
-        right_val = display_data.lambda_bank2_raw;
-        display_data.updated_0x651 = false;
-        has_update = true;
-      }
-      break;
-    case 2:
-      if (display_data.updated_0x640 || display_data.updated_0x659 || max_recall_active) {
-        left_val  = display_data.map_raw;
-        right_val = display_data.speed_raw;
-        display_data.updated_0x640 = false;
-        display_data.updated_0x659 = false;
-        has_update = true;
-      }
-      break;
-    case 3:
-      if (display_data.updated_0x641 || display_data.updated_0x641_duty || max_recall_active) {
-        left_val  = display_data.ls_fuel_press_raw;
-        right_val = display_data.inj_duty_cycle_raw;
-        display_data.updated_0x641 = false;
-        display_data.updated_0x641_duty = false;
-        has_update = true;
-      }
-      break;
-    case 4:
-      if (display_data.updated_0x670 || display_data.updated_0x649 || max_recall_active) {
-        left_val  = display_data.ethanol_pct_raw;
-        right_val = display_data.battery_volts_raw;
-        display_data.updated_0x670 = false;
-        display_data.updated_0x649 = false;
-        has_update = true;
-      }
-      break;
+  SignalState &left_sig = signals[screen.left.signal];
+  SignalState &right_sig = signals[screen.right.signal];
+  if (left_sig.updated || right_sig.updated || max_recall_active) {
+    left_raw  = max_recall_active ? left_sig.max  : left_sig.raw;
+    right_raw = max_recall_active ? right_sig.max : right_sig.raw;
+    left_sig.updated = false;
+    right_sig.updated = false;
+    has_update = true;
   }
 
   xSemaphoreGive(display_data_mutex);
@@ -994,57 +823,22 @@ void update_display_from_can_data(void) {
 
   if (!has_update) return;
 
-  // Apply scaling outside the mutex - read max_values directly (volatile, no lock needed)
-  if (max_recall_active) {
-    switch (mode) {
-      case 0:
-        left_val  = ((max_values.coolant_temp_max - 40) * 9.0f / 5.0f) + 32.0f;
-        right_val = max_values.oil_press_max * 0.1f / 6.895f;
-        break;
-      case 1:
-        left_val  = max_values.lambda_bank1_max * 0.01f * 14.7f;
-        right_val = max_values.lambda_bank2_max * 0.01f * 14.7f;
-        break;
-      case 2:
-        left_val  = (max_values.map_max * 0.1f - 105.0f) / 6.895f;
-        right_val = max_values.speed_max * 0.1f / 1.60934f;
-        break;
-      case 3:
-        left_val  = max_values.ls_fuel_press_max * 0.1f / 6.895f;
-        right_val = max_values.inj_duty_cycle_max;
-        break;
-      case 4:
-        left_val  = max_values.ethanol_pct_max;
-        right_val = max_values.battery_volts_max * 0.1f;
-        break;
-    }
-  } else {
-    switch (mode) {
-      case 0:
-        left_val  = ((left_val - 40) * 9.0f / 5.0f) + 32.0f;
-        right_val = right_val * 0.1f / 6.895f;
-        break;
-      case 1:
-        left_val  = left_val * 0.01f * 14.7f;
-        right_val = right_val * 0.01f * 14.7f;
-        break;
-      case 2:
-        left_val  = (left_val * 0.1f - 105.0f) / 6.895f;  // MAP: x0.1 kPa, -105 kPa offset → PSI
-        right_val = right_val * 0.1f / 1.60934f;
-        break;
-      case 3:
-        left_val  = left_val * 0.1f / 6.895f;
-        // right_val already in % (x1), no conversion needed
-        break;
-      case 4:
-        // left_val (ethanol) needs no scaling
-        right_val = right_val * 0.1f;
-        break;
-    }
-  }
+  update_gauge_label(get_left_value_label(), left_cache, screen.left, screen.left.scale(left_raw));
+  update_gauge_label(get_right_value_label(), right_cache, screen.right, screen.right.scale(right_raw));
+}
 
-  update_display_values(mode, left_val, right_val);
-  last_update_time = now;
+// Switch to a screen by index: sets titles, resets values, and remembers it for NVS
+void show_screen(uint8_t mode) {
+  if (mode >= NUM_SCREENS) mode = 0; // Guard against a bad value loaded from NVS
+  update_screen_labels(mode, SCREENS[mode].left.title, SCREENS[mode].right.title);
+  last_screen_mode = mode;
+}
+
+// Step forward (+1) or back (-1) through the screens, wrapping around
+void change_screen(int delta) {
+  uint8_t new_mode = (get_current_screen_mode() + NUM_SCREENS + delta) % NUM_SCREENS;
+  show_screen(new_mode);
+  Serial.printf("Screen changed to mode %d\n", new_mode);
 }
 
 void setup(void) {
@@ -1081,7 +875,6 @@ void setup(void) {
   xTaskCreatePinnedToCore(delayed_can_init_task, "Init_CAN", 2048, NULL, 1, NULL, 1);  
   xTaskCreatePinnedToCore(watchdog_task, "Watchdog", 2048, NULL, 1, NULL, 0);
   xTaskCreatePinnedToCore(periodic_save_task, "Save_NVS", 2048, NULL, 1, &save_task_handle, 0);
-  xTaskCreatePinnedToCore(restore_screen_mode_task, "Restore_Mode", 2048, NULL, 1, NULL, 0);
   xTaskCreatePinnedToCore(odometer_update_task, "Odometer", 4096, NULL, 1, NULL, 0);
   
   // Don't update display here - will be done after boot screen in restore task
@@ -1151,77 +944,52 @@ void update_ecu_warnings() {
   last_warning_active = warning_active;
 }
 
+// Show/hide an object only when its visibility changes (last: -1 = unknown, 0 = hidden, 1 = shown)
+void set_icon_visible(lv_obj_t *obj, bool show, int8_t &last) {
+  if (last == (int8_t)show) return;
+  if (show) {
+    lv_obj_clear_flag(obj, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_add_flag(obj, LV_OBJ_FLAG_HIDDEN);
+  }
+  last = show;
+}
+
+// True if a status was seen on CAN within ICON_TIMEOUT_MS
+bool status_recent(unsigned long last_seen, unsigned long now) {
+  return last_seen != 0 && (now - last_seen < ICON_TIMEOUT_MS);
+}
+
 // Update status icon visibility
 void update_status_icons() {
-  unsigned long now = millis();
-  
-  lv_obj_t* cruise_icon = get_cruise_icon();
-  lv_obj_t* tcs_icon = get_tcs_icon();
-  lv_obj_t* launch_icon = get_launch_icon();
-  lv_obj_t* two_step_icon = get_two_step_icon();
-  lv_obj_t* exhaust_bypass_icon = get_exhaust_bypass_icon();
+  static int8_t cruise_shown = -1, tcs_shown = -1, launch_shown = -1;
+  static int8_t two_step_shown = -1, exhaust_bypass_shown = -1, peak_recall_shown = -1;
+  static const lv_image_dsc_t *peak_recall_src = NULL;
+
   lv_obj_t* peak_recall_icon = get_peak_recall_icon();
-  
-  if (cruise_icon == NULL || tcs_icon == NULL || launch_icon == NULL || 
-      two_step_icon == NULL || exhaust_bypass_icon == NULL || peak_recall_icon == NULL) {
-    return; // Icons not ready yet
+  if (main_screen_loaded_time == 0 || peak_recall_icon == NULL) {
+    return; // Main screen not up yet
   }
-  
-  // Show icons during startup period or when active
-  bool show_cruise = icons_startup_shown || (cruise_active && (now - last_cruise_time < ICON_TIMEOUT_MS));
-  bool show_tcs = icons_startup_shown || (tcs_active && (now - last_tcs_time < ICON_TIMEOUT_MS));
-  bool show_launch = icons_startup_shown || (launch_active && (now - last_launch_time < ICON_TIMEOUT_MS));
-  bool show_two_step = icons_startup_shown || (two_step_active && (now - last_two_step_time < ICON_TIMEOUT_MS));
-  bool show_exhaust_bypass = icons_startup_shown || (exhaust_bypass_active && (now - last_exhaust_bypass_time < ICON_TIMEOUT_MS));
-  bool show_peak_recall = icons_startup_shown || max_recall_active; // Show on startup or when max recall is active
-  
-  // Update visibility
-  if (show_cruise) {
-    lv_obj_clear_flag(cruise_icon, LV_OBJ_FLAG_HIDDEN);
-  } else {
-    lv_obj_add_flag(cruise_icon, LV_OBJ_FLAG_HIDDEN);
-    cruise_active = false; // Reset state after timeout
-  }
-  
-  if (show_tcs) {
-    lv_obj_clear_flag(tcs_icon, LV_OBJ_FLAG_HIDDEN);
-  } else {
-    lv_obj_add_flag(tcs_icon, LV_OBJ_FLAG_HIDDEN);
-    tcs_active = false;
-  }
-  
-  if (show_launch) {
-    lv_obj_clear_flag(launch_icon, LV_OBJ_FLAG_HIDDEN);
-  } else {
-    lv_obj_add_flag(launch_icon, LV_OBJ_FLAG_HIDDEN);
-    launch_active = false;
-  }
-  
-  if (show_two_step) {
-    lv_obj_clear_flag(two_step_icon, LV_OBJ_FLAG_HIDDEN);
-  } else {
-    lv_obj_add_flag(two_step_icon, LV_OBJ_FLAG_HIDDEN);
-    two_step_active = false;
-  }
-  
-  if (show_exhaust_bypass) {
-    lv_obj_clear_flag(exhaust_bypass_icon, LV_OBJ_FLAG_HIDDEN);
-  } else {
-    lv_obj_add_flag(exhaust_bypass_icon, LV_OBJ_FLAG_HIDDEN);
-    exhaust_bypass_active = false;
-  }
-  
+
+  unsigned long now = millis();
+  bool startup = (now - main_screen_loaded_time < ICON_STARTUP_SHOW_MS);
+
+  set_icon_visible(get_cruise_icon(),         startup || status_recent(last_cruise_time, now),         cruise_shown);
+  set_icon_visible(get_tcs_icon(),            startup || status_recent(last_tcs_time, now),            tcs_shown);
+  set_icon_visible(get_launch_icon(),         startup || status_recent(last_launch_time, now),         launch_shown);
+  set_icon_visible(get_two_step_icon(),       startup || status_recent(last_two_step_time, now),       two_step_shown);
+  set_icon_visible(get_exhaust_bypass_icon(), startup || status_recent(last_exhaust_bypass_time, now), exhaust_bypass_shown);
+
+  // Peak recall icon swaps image between recall and clear modes
+  bool show_peak_recall = startup || max_recall_active;
   if (show_peak_recall) {
-    // Swap image source based on clear vs recall mode
-    if (max_clear_active) {
-      lv_image_set_src(peak_recall_icon, &ClearPeakRecall);
-    } else {
-      lv_image_set_src(peak_recall_icon, &PeakRecall);
+    const lv_image_dsc_t *src = max_clear_active ? &ClearPeakRecall : &PeakRecall;
+    if (src != peak_recall_src) {
+      lv_image_set_src(peak_recall_icon, src);
+      peak_recall_src = src;
     }
-    lv_obj_clear_flag(peak_recall_icon, LV_OBJ_FLAG_HIDDEN);
-  } else {
-    lv_obj_add_flag(peak_recall_icon, LV_OBJ_FLAG_HIDDEN);
   }
+  set_icon_visible(peak_recall_icon, show_peak_recall, peak_recall_shown);
 }
 
 void loop(void) {
@@ -1231,27 +999,14 @@ void loop(void) {
   last_loop_time = millis();
   unsigned long now = millis();
   
-  // Check if we need to restore screen mode after boot
-  if (restore_mode_pending) {
-    restore_mode_pending = false;
-    Serial.printf("Restoring screen mode to %d\n", last_screen_mode);
-    update_screen_labels(last_screen_mode);
-  }
-
   // CAN-triggered screen navigation (next screen: bit 4, prev screen: bit 5 of 0x17C byte 1)
   if (screen_next_pending) {
     screen_next_pending = false;
-    uint8_t new_mode = (get_current_screen_mode() + 1) % 5;
-    update_screen_labels(new_mode);
-    last_screen_mode = new_mode;
-    Serial.printf("CAN: Screen next -> mode %d\n", new_mode);
+    change_screen(+1);
   }
   if (screen_prev_pending) {
     screen_prev_pending = false;
-    uint8_t new_mode = (get_current_screen_mode() + 4) % 5; // +4 mod 5 == -1 mod 5
-    update_screen_labels(new_mode);
-    last_screen_mode = new_mode;
-    Serial.printf("CAN: Screen prev -> mode %d\n", new_mode);
+    change_screen(-1);
   }
   
   // Check if odometer display update is pending
@@ -1286,10 +1041,7 @@ void loop(void) {
         
         // P5 triggers screen change
         if (pin == 5) {
-          uint8_t new_mode = (get_current_screen_mode() + 1) % 5;
-          update_screen_labels(new_mode);
-          last_screen_mode = new_mode;
-          Serial.printf("Screen changed to mode %d\n", new_mode);
+          change_screen(+1);
         }
         // P6 triggers trip reset
         else if (pin == 6) {
