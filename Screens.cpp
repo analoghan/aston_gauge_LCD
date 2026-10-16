@@ -216,7 +216,7 @@ void main_scr_init(void) {
   lv_obj_add_style(odometer_label, &style_label_title, 0);
 
   odometer_value = lv_label_create(main_scr);
-  lv_label_set_text(odometer_value, "0.0");
+  lv_label_set_text(odometer_value, "00000.0");
   lv_obj_set_pos(odometer_value, 35, 80);
   lv_obj_add_style(odometer_value, &style_label_title, 0);
 
@@ -226,7 +226,7 @@ void main_scr_init(void) {
   lv_obj_add_style(trip_label, &style_label_title, 0);
 
   trip_value = lv_label_create(main_scr);
-  lv_label_set_text(trip_value, "0.0");
+  lv_label_set_text(trip_value, "00000.0");
   lv_obj_set_pos(trip_value, 35, 782);
   lv_obj_add_style(trip_value, &style_label_title, 0);
 

@@ -130,6 +130,10 @@ typedef struct {
 
 volatile MaxValues max_values = {};
 
+// Screen navigation pending flags (set from CAN task, consumed in main loop)
+volatile bool screen_next_pending = false;
+volatile bool screen_prev_pending = false;
+
 // Max recall state
 volatile bool max_recall_active = false;
 volatile bool max_clear_active = false; // Track if we're clearing (vs recalling)
@@ -144,10 +148,14 @@ volatile bool max_recall_cleared_this_press = false; // Already cleared during t
 // PERSISTENT STORAGE
 // ============================================================================
 
-// Persistent storage variables
-uint32_t odometer_miles = 0;
-uint32_t trip_miles = 0;
-uint32_t trip2_miles = 0;
+// Persistent storage variables (hundredths of miles)
+// Written by the odometer task (core 0) and the main loop (trip reset, core 1):
+// any read-modify-write must hold odometer_mux.
+volatile uint32_t odometer_miles = 0;
+volatile uint32_t trip_miles = 0;
+volatile uint32_t trip2_miles = 0;
+portMUX_TYPE odometer_mux = portMUX_INITIALIZER_UNLOCKED;
+TaskHandle_t save_task_handle = NULL; // Notify this task to request an immediate NVS save
 uint8_t last_screen_mode = 0;
 uint8_t current_trip_display = 1; // 1 or 2, always starts at 1
 bool restore_mode_pending = false; // Flag to trigger mode restore from main loop
@@ -157,11 +165,12 @@ bool restore_mode_pending = false; // Flag to trigger mode restore from main loo
 // ============================================================================
 
 // Odometer tracking variables
-volatile uint8_t current_speed = 0; // Current speed in MPH
+volatile uint16_t current_speed_x10 = 0; // Current speed in tenths of MPH (keeps fraction for odometer accuracy)
 portMUX_TYPE speed_mutex = portMUX_INITIALIZER_UNLOCKED;
 volatile bool trip_reset_pending = false; // Flag to trigger trip reset from main loop
 volatile bool trip_switch_pending = false; // Flag to trigger trip display switch from main loop
 volatile bool odometer_display_pending = false; // Flag to trigger odometer display update
+volatile bool force_odometer_refresh = false;   // Force cache bypass on next odometer update
 
 // Load values from NVS flash
 void load_persistent_data() {
@@ -195,43 +204,53 @@ void load_persistent_data() {
                 odometer_miles, trip_miles, trip2_miles, last_screen_mode);
 }
 
-// Save values to NVS flash
-void save_persistent_data() {
+// Save values to NVS flash. Only called from periodic_save_task (Preferences is not thread-safe);
+// other code should call request_save() instead.
+void save_persistent_data(uint32_t odo, uint32_t trip1, uint32_t trip2, uint8_t mode) {
   preferences.begin("gauge", false); // Open in read-write mode
-  
-  preferences.putUInt("odometer", odometer_miles);
-  preferences.putUInt("trip", trip_miles);
-  preferences.putUInt("trip2", trip2_miles);
-  preferences.putUChar("screen_mode", last_screen_mode);
-  
+
+  preferences.putUInt("odometer", odo);
+  preferences.putUInt("trip", trip1);
+  preferences.putUInt("trip2", trip2);
+  preferences.putUChar("screen_mode", mode);
+
   preferences.end();
-  
-  /*
-  Serial.printf("Saved to NVS: Odometer=%lu, Trip1=%lu, Trip2=%lu, Mode=%d\n", 
-                odometer_miles, trip_miles, trip2_miles, last_screen_mode);
-  */
 }
 
-// Periodic save task - saves every 10 seconds if values changed
+// Ask the save task to write to NVS now instead of waiting for the next 10s check
+void request_save() {
+  if (save_task_handle != NULL) {
+    xTaskNotifyGive(save_task_handle);
+  }
+}
+
+// Periodic save task - saves every 10 seconds (or immediately on request) if values changed
 void periodic_save_task(void *arg) {
-  static uint32_t last_odometer = 0;
-  static uint32_t last_trip = 0;
-  static uint32_t last_trip2 = 0;
-  static uint8_t last_mode = 0;
-  
+  uint32_t last_odometer = odometer_miles;
+  uint32_t last_trip = trip_miles;
+  uint32_t last_trip2 = trip2_miles;
+  uint8_t last_mode = last_screen_mode;
+
   while (1) {
-    vTaskDelay(pdMS_TO_TICKS(10000)); // Check every 10 seconds
-    
+    // Wake every 10 seconds, or early when request_save() notifies us
+    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(10000));
+
+    // Take a consistent snapshot of the counters
+    portENTER_CRITICAL(&odometer_mux);
+    uint32_t odo = odometer_miles;
+    uint32_t trip1 = trip_miles;
+    uint32_t trip2 = trip2_miles;
+    portEXIT_CRITICAL(&odometer_mux);
+    uint8_t mode = last_screen_mode;
+
     // Only save if values have changed
-    if (odometer_miles != last_odometer || 
-        trip_miles != last_trip ||
-        trip2_miles != last_trip2 ||
-        last_screen_mode != last_mode) {
-      save_persistent_data();
-      last_odometer = odometer_miles;
-      last_trip = trip_miles;
-      last_trip2 = trip2_miles;
-      last_mode = last_screen_mode;
+    if (odo != last_odometer || trip1 != last_trip ||
+        trip2 != last_trip2 || mode != last_mode) {
+      save_persistent_data(odo, trip1, trip2, mode);
+      last_odometer = odo;
+      last_trip = trip1;
+      last_trip2 = trip2;
+      last_mode = mode;
     }
   }
 }
@@ -253,7 +272,8 @@ void update_odometer_display() {
     return;
   }
   
-  if (odometer_miles != last_displayed_odometer) {
+  if (odometer_miles != last_displayed_odometer || force_odometer_refresh) {
+    force_odometer_refresh = false;
     char text[16];
     // Display as miles with 1 decimal place (stored as hundredths)
     float miles = odometer_miles / 100.0;
@@ -301,16 +321,17 @@ void process_trip_reset() {
     trip_reset_pending = false;
     
     // Reset only the currently displayed trip
+    portENTER_CRITICAL(&odometer_mux);
     if (current_trip_display == 1) {
       trip_miles = 0;
-      Serial.println("Trip 1 meter reset");
     } else {
       trip2_miles = 0;
-      Serial.println("Trip 2 meter reset");
     }
-    
+    portEXIT_CRITICAL(&odometer_mux);
+    Serial.printf("Trip %d meter reset\n", current_trip_display);
+
     update_odometer_display();
-    save_persistent_data(); // Save immediately
+    request_save(); // Save immediately
   }
 }
 
@@ -339,6 +360,7 @@ void restore_screen_mode_task(void *arg) {
   
   // Wait a bit more for main screen to fully load, then trigger odometer display update
   vTaskDelay(pdMS_TO_TICKS(200));
+  force_odometer_refresh = true;  // Bypass cache — screen just loaded fresh
   odometer_display_pending = true;
   
   // Show icons for 2 seconds on startup
@@ -361,7 +383,7 @@ void odometer_update_task(void *arg) {
     // Sample speed every 100ms
     for (int i = 0; i < SAMPLES_PER_SECOND; i++) {
       portENTER_CRITICAL(&speed_mutex);
-      speed_samples[i] = current_speed;
+      speed_samples[i] = current_speed_x10;
       portEXIT_CRITICAL(&speed_mutex);
       vTaskDelay(pdMS_TO_TICKS(100));
     }
@@ -371,7 +393,7 @@ void odometer_update_task(void *arg) {
     for (int i = 0; i < SAMPLES_PER_SECOND; i++) {
       speed_sum += speed_samples[i];
     }
-    float avg_speed_mph = speed_sum / (float)SAMPLES_PER_SECOND;
+    float avg_speed_mph = speed_sum / (float)SAMPLES_PER_SECOND / 10.0f;
     
     // Calculate distance traveled in this second
     // Distance = Speed * Time
@@ -384,9 +406,11 @@ void odometer_update_task(void *arg) {
     // Update odometer and trip when we've accumulated at least 0.01 miles
     if (accumulated_distance >= 0.01) {
       uint32_t miles_to_add = (uint32_t)(accumulated_distance * 100); // Convert to hundredths
+      portENTER_CRITICAL(&odometer_mux);
       odometer_miles += miles_to_add;
       trip_miles += miles_to_add;
       trip2_miles += miles_to_add;
+      portEXIT_CRITICAL(&odometer_mux);
       accumulated_distance -= (miles_to_add / 100.0);
       
       // Trigger display update from main loop (LVGL-safe)
@@ -466,10 +490,38 @@ void receive_can_task(void *arg) {
   uint32_t alerts;
   uint32_t msg_count = 0;
   uint32_t overflow_count = 0;
+  uint32_t bus_error_count = 0;
   uint32_t last_stats_time = millis();
-  
+  bool bus_recovering = false;
+
+  // Previous state of the 0x17C screen nav bits, for rising-edge detection
+  bool nav_next_last = false;
+  bool nav_prev_last = false;
+
   while (1) {
     twai_read_alerts(&alerts, 0);
+
+    // Bus-off: controller stops participating until recovery completes (128 x 11 recessive bits)
+    if (alerts & TWAI_ALERT_BUS_OFF) {
+      Serial.println("CAN bus-off, initiating recovery...");
+      twai_initiate_recovery();
+      bus_recovering = true;
+    }
+    if (alerts & TWAI_ALERT_BUS_RECOVERED) {
+      Serial.println("CAN bus recovered, restarting driver");
+      twai_start();
+      bus_recovering = false;
+    }
+    if (bus_recovering) {
+      vTaskDelay(pdMS_TO_TICKS(10));
+      continue;
+    }
+
+    if (alerts & TWAI_ALERT_BUS_ERROR) {
+      // Individual bus errors are handled by the controller; just count them
+      bus_error_count++;
+    }
+
     if (alerts & TWAI_ALERT_RX_QUEUE_FULL) {
       overflow_count++;
       twai_message_t dummy;
@@ -477,14 +529,7 @@ void receive_can_task(void *arg) {
       vTaskDelay(pdMS_TO_TICKS(10));
       continue;
     }
-    
-    if (alerts & TWAI_ALERT_BUS_ERROR) {
-      Serial.println("CAN bus error, recovering...");
-      twai_initiate_recovery();
-      vTaskDelay(pdMS_TO_TICKS(100));
-      continue;
-    }
-    
+
     twai_message_t message;
     esp_err_t err = twai_receive(&message, pdMS_TO_TICKS(10));
     
@@ -570,7 +615,20 @@ void receive_can_task(void *arg) {
           break;
         }
 
-        case 0x178: {
+        case 0x17C: {
+          // Screen navigation: byte 1, bit 4 = next screen, bit 5 = prev screen.
+          // Bits stay set while the button is held, so only act on the 0 -> 1 transition.
+          bool nav_next = (message.data[1] >> 4) & 0x01;
+          bool nav_prev = (message.data[1] >> 5) & 0x01;
+          if (nav_next && !nav_next_last) {
+            screen_next_pending = true;
+          }
+          if (nav_prev && !nav_prev_last) {
+            screen_prev_pending = true;
+          }
+          nav_next_last = nav_next;
+          nav_prev_last = nav_prev;
+
           // Peak recall button: byte 1, bit 6 (1 = pressed, 0 = released)
           bool button_now = (message.data[1] >> 6) & 0x01;
           
@@ -682,11 +740,12 @@ void receive_can_task(void *arg) {
       }
       xSemaphoreGive(display_data_mutex);
 
-      // Update current_speed outside the critical section (avoids nested lock with speed_mutex)
+      // Update current_speed_x10 outside the critical section (avoids nested lock with speed_mutex)
       if (message.identifier == 0x659) {
         uint16_t spd_raw = ((uint16_t)message.data[4] << 8) | message.data[5];
         portENTER_CRITICAL(&speed_mutex);
-        current_speed = (uint8_t)(spd_raw * 0.1f / 1.60934f);
+        // raw is 0.1 km/h, so raw / 1.60934 = tenths of MPH
+        current_speed_x10 = (uint16_t)(spd_raw / 1.60934f + 0.5f);
         portEXIT_CRITICAL(&speed_mutex);
       }
 
@@ -695,7 +754,7 @@ void receive_can_task(void *arg) {
       }
       
       if (millis() - last_stats_time > 10000) {
-        Serial.printf("CAN: %lu msgs, %lu overflows\n", msg_count, overflow_count);
+        Serial.printf("CAN: %lu msgs, %lu overflows, %lu bus errors\n", msg_count, overflow_count, bus_error_count);
         last_stats_time = millis();
         msg_count = 0;
       }
@@ -865,7 +924,9 @@ void update_display_from_can_data(void) {
   if (display_data.last_update_0x659 > 0 && now - display_data.last_update_0x659 > CAN_DATA_TIMEOUT_MS) {
     display_data.speed_raw = 0;
     display_data.updated_0x659 = true;
-    current_speed = 0; // speed_mutex not needed here - main loop only
+    portENTER_CRITICAL(&speed_mutex);
+    current_speed_x10 = 0;
+    portEXIT_CRITICAL(&speed_mutex);
   }
   if (display_data.last_update_0x641 > 0 && now - display_data.last_update_0x641 > CAN_DATA_TIMEOUT_MS) {
     display_data.ls_fuel_press_raw = 0;
@@ -1019,7 +1080,7 @@ void setup(void) {
   xTaskCreatePinnedToCore(receive_can_task, "RX_CAN", 4096, NULL, 1, NULL, 0);  // Core 0, priority 1
   xTaskCreatePinnedToCore(delayed_can_init_task, "Init_CAN", 2048, NULL, 1, NULL, 1);  
   xTaskCreatePinnedToCore(watchdog_task, "Watchdog", 2048, NULL, 1, NULL, 0);
-  xTaskCreatePinnedToCore(periodic_save_task, "Save_NVS", 2048, NULL, 1, NULL, 0);
+  xTaskCreatePinnedToCore(periodic_save_task, "Save_NVS", 2048, NULL, 1, &save_task_handle, 0);
   xTaskCreatePinnedToCore(restore_screen_mode_task, "Restore_Mode", 2048, NULL, 1, NULL, 0);
   xTaskCreatePinnedToCore(odometer_update_task, "Odometer", 4096, NULL, 1, NULL, 0);
   
@@ -1176,6 +1237,22 @@ void loop(void) {
     Serial.printf("Restoring screen mode to %d\n", last_screen_mode);
     update_screen_labels(last_screen_mode);
   }
+
+  // CAN-triggered screen navigation (next screen: bit 4, prev screen: bit 5 of 0x17C byte 1)
+  if (screen_next_pending) {
+    screen_next_pending = false;
+    uint8_t new_mode = (get_current_screen_mode() + 1) % 5;
+    update_screen_labels(new_mode);
+    last_screen_mode = new_mode;
+    Serial.printf("CAN: Screen next -> mode %d\n", new_mode);
+  }
+  if (screen_prev_pending) {
+    screen_prev_pending = false;
+    uint8_t new_mode = (get_current_screen_mode() + 4) % 5; // +4 mod 5 == -1 mod 5
+    update_screen_labels(new_mode);
+    last_screen_mode = new_mode;
+    Serial.printf("CAN: Screen prev -> mode %d\n", new_mode);
+  }
   
   // Check if odometer display update is pending
   if (odometer_display_pending) {
@@ -1190,10 +1267,12 @@ void loop(void) {
   process_trip_switch();
   
   // Check TCA9554 P5-P8 input states periodically
-  if (now - last_tca_check >= TCA_CHECK_INTERVAL_MS) {
-    last_tca_check = now;
-    uint8_t current_state = read_exios(TCA9554_INPUT_REG);
-    
+  uint8_t current_state;
+  bool tca_poll_due = (now - last_tca_check >= TCA_CHECK_INTERVAL_MS);
+  if (tca_poll_due) last_tca_check = now;
+  // Skip the edge check entirely if the I2C read fails, so a bad read can't fake a button press
+  if (tca_poll_due && i2c_read(TCA9554_ADDRESS, TCA9554_INPUT_REG, &current_state, 1)) {
+
     // Check each pin (P5-P8) for falling edge (high to low transition = pulled to ground)
     // P5 = bit 4, P6 = bit 5, P7 = bit 6, P8 = bit 7
     for (int pin = 5; pin <= 8; pin++) {

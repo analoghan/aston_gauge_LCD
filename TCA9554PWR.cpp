@@ -10,8 +10,8 @@ uint8_t i2c_read_exio(uint8_t REG)                             // Read the value
     printf("The I2C transmission fails. - I2C Read EXIO\r\n");
   }
   Wire.requestFrom(TCA9554_ADDRESS, 1); 
-  uint8_t bitsStatus;
-  if (Wire.available()) {                  
+  uint8_t bitsStatus = 0xFF;                              // Default if the read fails (avoid returning garbage)
+  if (Wire.available()) {                
     bitsStatus = Wire.read(); 
   }                       
   return bitsStatus;                                     
