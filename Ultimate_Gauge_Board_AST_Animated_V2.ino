@@ -72,6 +72,9 @@ enum SignalId {
   SIG_INJ_DUTY,       // 0x641 B6,    x1 %
   SIG_ETHANOL,        // 0x670 B5,    x1 %
   SIG_BATTERY,        // 0x649 B5,    x0.1 V
+  SIG_CRUISE_ENABLE,  // 0x661 B0 bits 7-6: 0 = Disabled, 1 = Cruise Control, 2 = Speed Limit
+  SIG_CRUISE_ON,      // 0x661 B0 bit 5:    1 = cruise engaged
+  SIG_CRUISE_SET_SPEED, // 0x661 Cruise_Speed_Display (12 bits), x0.1 km/h
   SIG_COUNT
 };
 
@@ -79,17 +82,20 @@ enum SignalId {
 typedef struct {
   uint16_t raw;                 // Latest raw value
   uint16_t max;                 // Peak raw value (for peak recall)
-  bool     updated;             // New data since the display last consumed it
+  bool     valid;               // Received within CAN_DATA_TIMEOUT_MS (false = show "--")
+  bool     updated;             // New data or validity change since the display last consumed it
   unsigned long last_update;    // millis() of last CAN update (0 = never received)
 } SignalState;
 
 SignalState signals[SIG_COUNT] = {};
 SemaphoreHandle_t display_data_mutex = NULL;
 
-#define CAN_DATA_TIMEOUT_MS 500 // Reset values after 500ms of no updates
+#define CAN_DATA_TIMEOUT_MS 500 // Show "--" after 500ms of no updates
 
-// Raw value a signal falls back to after CAN_DATA_TIMEOUT_MS of silence (coolant raw 40 = 0°C)
-#define SIGNAL_TIMEOUT_RAW(id) ((id) == SIG_COOLANT_TEMP ? 40 : 0)
+// Barometric pressure for converting absolute MAP to boost. Updated from M1 Ambient_Pressure
+// (0x64A) when available; the fallback is the fixed offset this gauge was originally tuned with.
+#define AMBIENT_FALLBACK_KPA 105.0f
+volatile float ambient_press_kpa = AMBIENT_FALLBACK_KPA;
 
 // ============================================================================
 // SCREEN DEFINITIONS
@@ -107,12 +113,18 @@ typedef struct {
   float     (*scale)(float raw);      // Raw CAN value → display units
   uint8_t     decimals;               // 0 = integer, 1 = one decimal place
   lv_color_t (*color)(float value);   // Text color for a scaled value (NULL = always white)
+  const char *(*text)(float value);   // Show this text instead of the number (NULL = numeric)
 } GaugeDef;
 
 typedef struct {
   GaugeDef left;
   GaugeDef right;
+  bool (*available)(void);            // Screen can be selected right now (NULL = always)
 } ScreenDef;
+
+// Cruise is enabled (Cruise_Enable = Cruise Control) with live 0x661 data.
+// Updated by update_cruise_screen(); main loop only.
+bool cruise_available = false;
 
 // Lambdas rather than functions: the Arduino IDE inserts auto-generated prototypes above
 // the first function in the sketch, which must come after these type definitions.
@@ -134,7 +146,7 @@ static const ScreenDef SCREENS[] = {
     { "AFR B2",      SIG_LAMBDA_B2,    [](float r) { return r * 0.01f * 14.7f; }, 1, afr_color },
   },
   { // 2: Boost / speed
-    { "MAP PSI",     SIG_MAP,          [](float r) { return (r * 0.1f - 105.0f) / 6.895f; }, 1, NULL }, // -105 kPa offset → gauge PSI
+    { "MAP PSI",     SIG_MAP,          [](float r) { return (r * 0.1f - ambient_press_kpa) / 6.895f; }, 1, NULL }, // Absolute → gauge PSI
     { "Speed MPH",   SIG_SPEED,        [](float r) { return r * 0.1f / 1.60934f; }, 0, NULL },
   },
   { // 3: Fuel pressure / injector duty
@@ -147,15 +159,24 @@ static const ScreenDef SCREENS[] = {
     { "Ethanol %",   SIG_ETHANOL,      [](float r) { return r; }, 0, NULL },
     { "Battery V",   SIG_BATTERY,      [](float r) { return r * 0.1f; }, 1, NULL },
   },
+  { // 5: Cruise control - only selectable while cruise is enabled, auto-selected when a speed is set
+    { "Cruise",      SIG_CRUISE_ON,    [](float r) { return r; }, 0,
+      [](float v) { return (v >= 1) ? COLOR_GREEN : COLOR_WHITE; },
+      [](float v) { return (v >= 1) ? "On" : "Off"; } },
+    { "Set MPH",     SIG_CRUISE_SET_SPEED, [](float r) { return r * 0.1f / 1.60934f; }, 0, NULL },
+    []() { return cruise_available; },
+  },
 };
 
 const uint8_t NUM_SCREENS = sizeof(SCREENS) / sizeof(SCREENS[0]);
+const uint8_t SCREEN_CRUISE = 5; // Index of the cruise screen in SCREENS
 
 // Last value/color written to a gauge's label, so LVGL is only touched on change
 typedef struct {
   float      value;
   lv_color_t color;
-  bool       valid;
+  bool       missing;   // Showing "--"
+  bool       valid;     // Cache holds what's on screen (false forces a redraw)
 } GaugeCache;
 
 // Screen navigation pending flags (set from CAN task, consumed in main loop)
@@ -201,29 +222,13 @@ volatile bool force_odometer_refresh = false;   // Force cache bypass on next od
 
 // Load values from NVS flash
 void load_persistent_data() {
-  preferences.begin("gauge", false); // Open in read-only mode
+  preferences.begin("gauge", true); // Read-only
   
   // Load odometer/trip as hundredths of miles (default: 5862500 = 58,625.00 miles)
   odometer_miles = preferences.getUInt("odometer", 5862500);
   trip_miles = preferences.getUInt("trip", 51000); // Default: 510.00 miles
   trip2_miles = preferences.getUInt("trip2", 0); // Default: 0.00 miles
   last_screen_mode = preferences.getUChar("screen_mode", 0); // Default: mode 0
-  
-  // Check if values need migration (old format was whole miles, new is hundredths)
-  // If odometer is less than 100000 (1000 miles), it's likely old format
-  if (odometer_miles < 100000 && odometer_miles > 0) {
-    Serial.println("Migrating old odometer format to hundredths");
-    odometer_miles = odometer_miles * 100; // Convert to hundredths
-    trip_miles = trip_miles * 100;
-    trip2_miles = trip2_miles * 100;
-    preferences.end();
-    
-    // Save migrated values
-    preferences.begin("gauge", false);
-    preferences.putUInt("odometer", odometer_miles);
-    preferences.putUInt("trip", trip_miles);
-    preferences.putUInt("trip2", trip2_miles);
-  }
   
   preferences.end();
   
@@ -504,6 +509,7 @@ static inline uint16_t be16(const uint8_t *bytes) {
 void update_signal(SignalId id, uint16_t raw, unsigned long now) {
   SignalState &sig = signals[id];
   sig.raw = raw;
+  sig.valid = true;
   sig.updated = true;
   sig.last_update = now;
   if (raw > sig.max) sig.max = raw;
@@ -594,6 +600,13 @@ void receive_can_task(void *arg) {
           update_signal(SIG_BATTERY, message.data[5], now_msg);
           break;
 
+        case 0x64A: {
+          // Ambient_Pressure: bit 55|16@0- = B6-B7, signed, x0.1 kPa
+          float kpa = (int16_t)be16(&message.data[6]) * 0.1f;
+          if (kpa >= 60.0f && kpa <= 110.0f) ambient_press_kpa = kpa; // Ignore implausible/unset values
+          break;
+        }
+
         case 0x651:
           // Exhaust_Lambda_Bank_1: B2, Exhaust_Lambda_Bank_2: B3, x0.01 LA
           update_signal(SIG_LAMBDA_B1, message.data[2], now_msg);
@@ -603,6 +616,13 @@ void receive_can_task(void *arg) {
         case 0x659:
           // Vehicle_Speed: bit 39|16@0+ = B4-B5, x0.1 km/h
           update_signal(SIG_SPEED, be16(&message.data[4]), now_msg);
+          break;
+
+        case 0x661:
+          // M1_Cruise_0x661: Cruise_Enable 7|2, Cruise_State_On 5|1, Cruise_Speed_Display 11|12 (x0.1 km/h)
+          update_signal(SIG_CRUISE_ENABLE, (message.data[0] >> 6) & 0x03, now_msg);
+          update_signal(SIG_CRUISE_ON, (message.data[0] >> 5) & 0x01, now_msg);
+          update_signal(SIG_CRUISE_SET_SPEED, ((uint16_t)(message.data[1] & 0x0F) << 8) | message.data[2], now_msg);
           break;
 
         case 0x670:
@@ -739,25 +759,55 @@ void receive_can_task(void *arg) {
 }
 
 // Format, color, and write one gauge value to its label (skips unchanged text/color)
-void update_gauge_label(lv_obj_t *label, GaugeCache &cache, const GaugeDef &gauge, float value) {
-  lv_color_t color = gauge.color ? gauge.color(value) : COLOR_WHITE;
+// missing = no current data: shows "--" in white
+void update_gauge_label(lv_obj_t *label, GaugeCache &cache, const GaugeDef &gauge, float value, bool missing) {
+  lv_color_t color = (gauge.color && !missing) ? gauge.color(value) : COLOR_WHITE;
 
-  if (!cache.valid || value != cache.value) {
+  if (!cache.valid || missing != cache.missing || (!missing && value != cache.value)) {
     // Right-aligned so digits don't shift: 4 chars for integers ("   0"), 5 for decimals (" 14.7")
     char text[12];
-    if (gauge.decimals == 0) {
+    int width = (gauge.decimals == 0) ? 4 : 5;
+    if (missing) {
+      snprintf(text, sizeof(text), "%*s", width, "--");
+    } else if (gauge.text) {
+      snprintf(text, sizeof(text), "%*s", width, gauge.text(value));
+    } else if (gauge.decimals == 0) {
       snprintf(text, sizeof(text), "%4d", (int)value);
     } else {
       snprintf(text, sizeof(text), "%5.1f", value);
     }
     lv_label_set_text(label, text);
     cache.value = value;
+    cache.missing = missing;
   }
   if (!cache.valid || !lv_color_eq(color, cache.color)) {
     lv_obj_set_style_text_color(label, color, LV_PART_MAIN);
     cache.color = color;
   }
   cache.valid = true;
+}
+
+// Track cruise state: switch to the cruise screen when a set speed first appears, and
+// leave it (back to the last regular screen) when cruise is disabled or 0x661 goes quiet
+void update_cruise_screen() {
+  static bool speed_was_set = false;
+
+  xSemaphoreTake(display_data_mutex, portMAX_DELAY);
+  const SignalState &enable = signals[SIG_CRUISE_ENABLE];
+  const SignalState &set_speed = signals[SIG_CRUISE_SET_SPEED];
+  cruise_available = enable.valid && enable.raw == 1;
+  bool speed_set = cruise_available && set_speed.valid && set_speed.raw != 0;
+  xSemaphoreGive(display_data_mutex);
+
+  uint8_t mode = get_current_screen_mode();
+  if (speed_set && !speed_was_set && mode != SCREEN_CRUISE) {
+    Serial.println("Cruise speed set, switching to cruise screen");
+    show_screen(SCREEN_CRUISE);
+  } else if (!cruise_available && mode == SCREEN_CRUISE) {
+    Serial.println("Cruise disabled, leaving cruise screen");
+    show_screen(last_screen_mode);
+  }
+  speed_was_set = speed_set;
 }
 
 void update_display_from_can_data(void) {
@@ -777,27 +827,32 @@ void update_display_from_can_data(void) {
     max_clear_active = false;
   }
   
+  update_cruise_screen(); // May change screen, so run before reading the mode
+
   uint8_t mode = get_current_screen_mode();
   const ScreenDef &screen = SCREENS[mode];
 
   // update_screen_labels() resets the labels on a mode change, so the cache is stale
-  if (mode != last_mode) {
+  // and both gauges must be redrawn even if no new data has arrived
+  bool mode_changed = (mode != last_mode);
+  if (mode_changed) {
     left_cache.valid = false;
     right_cache.valid = false;
     last_mode = mode;
   }
 
   uint16_t left_raw = 0, right_raw = 0;
+  bool left_missing = false, right_missing = false;
   bool has_update = false;
 
   // --- Snapshot signals under mutex, no nested locks ---
   xSemaphoreTake(display_data_mutex, portMAX_DELAY);
 
-  // Fall back to the timeout value for any signal that has gone quiet
+  // Mark any signal that has gone quiet as missing
   for (int i = 0; i < SIG_COUNT; i++) {
     SignalState &sig = signals[i];
-    if (sig.last_update > 0 && now - sig.last_update > CAN_DATA_TIMEOUT_MS) {
-      sig.raw = SIGNAL_TIMEOUT_RAW(i);
+    if (sig.valid && now - sig.last_update > CAN_DATA_TIMEOUT_MS) {
+      sig.valid = false;
       sig.updated = true;
       if (i == SIG_SPEED) {
         // Stop the odometer accumulating at the last known speed
@@ -810,9 +865,12 @@ void update_display_from_can_data(void) {
 
   SignalState &left_sig = signals[screen.left.signal];
   SignalState &right_sig = signals[screen.right.signal];
-  if (left_sig.updated || right_sig.updated || max_recall_active) {
+  if (left_sig.updated || right_sig.updated || max_recall_active || mode_changed) {
     left_raw  = max_recall_active ? left_sig.max  : left_sig.raw;
     right_raw = max_recall_active ? right_sig.max : right_sig.raw;
+    // Peak recall shows "--" only for a signal never received; live view for any stale signal
+    left_missing  = max_recall_active ? (left_sig.last_update == 0)  : !left_sig.valid;
+    right_missing = max_recall_active ? (right_sig.last_update == 0) : !right_sig.valid;
     left_sig.updated = false;
     right_sig.updated = false;
     has_update = true;
@@ -823,20 +881,32 @@ void update_display_from_can_data(void) {
 
   if (!has_update) return;
 
-  update_gauge_label(get_left_value_label(), left_cache, screen.left, screen.left.scale(left_raw));
-  update_gauge_label(get_right_value_label(), right_cache, screen.right, screen.right.scale(right_raw));
+  update_gauge_label(get_left_value_label(), left_cache, screen.left, screen.left.scale(left_raw), left_missing);
+  update_gauge_label(get_right_value_label(), right_cache, screen.right, screen.right.scale(right_raw), right_missing);
 }
 
-// Switch to a screen by index: sets titles, resets values, and remembers it for NVS
+bool screen_available(uint8_t mode) {
+  return mode < NUM_SCREENS && (SCREENS[mode].available == NULL || SCREENS[mode].available());
+}
+
+// Switch to a screen by index: sets titles and resets values. Only always-available screens
+// are remembered in last_screen_mode (saved to NVS), so it is also the screen to return to.
 void show_screen(uint8_t mode) {
-  if (mode >= NUM_SCREENS) mode = 0; // Guard against a bad value loaded from NVS
+  if (!screen_available(mode)) mode = 0; // Guard against a bad or unavailable saved value
   update_screen_labels(mode, SCREENS[mode].left.title, SCREENS[mode].right.title);
-  last_screen_mode = mode;
+  if (SCREENS[mode].available == NULL) {
+    last_screen_mode = mode;
+  }
 }
 
-// Step forward (+1) or back (-1) through the screens, wrapping around
+// Step forward (+1) or back (-1) through the screens, wrapping around and
+// skipping screens that aren't currently available
 void change_screen(int delta) {
-  uint8_t new_mode = (get_current_screen_mode() + NUM_SCREENS + delta) % NUM_SCREENS;
+  uint8_t new_mode = get_current_screen_mode();
+  for (uint8_t i = 0; i < NUM_SCREENS; i++) {
+    new_mode = (new_mode + NUM_SCREENS + delta) % NUM_SCREENS;
+    if (screen_available(new_mode)) break;
+  }
   show_screen(new_mode);
   Serial.printf("Screen changed to mode %d\n", new_mode);
 }
