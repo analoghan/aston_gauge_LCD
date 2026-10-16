@@ -122,7 +122,7 @@ typedef struct {
   bool (*available)(void);            // Screen can be selected right now (NULL = always)
 } ScreenDef;
 
-// Cruise is enabled (Cruise_Enable = Cruise Control) with live 0x661 data.
+// Cruise is enabled (Cruise_Enable = Cruise Control or Speed Limit) with live 0x661 data.
 // Updated by update_cruise_screen(); main loop only.
 bool cruise_available = false;
 
@@ -795,7 +795,7 @@ void update_cruise_screen() {
   xSemaphoreTake(display_data_mutex, portMAX_DELAY);
   const SignalState &enable = signals[SIG_CRUISE_ENABLE];
   const SignalState &set_speed = signals[SIG_CRUISE_SET_SPEED];
-  cruise_available = enable.valid && enable.raw == 1;
+  cruise_available = enable.valid && (enable.raw == 1 || enable.raw == 2); // Cruise Control or Speed Limit
   bool speed_set = cruise_available && set_speed.valid && set_speed.raw != 0;
   xSemaphoreGive(display_data_mutex);
 

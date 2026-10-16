@@ -55,7 +55,7 @@ Every screen also shows the odometer and the selected trip meter. The last scree
 | 5 | Cruise engaged: On (green) / Off | Cruise set speed (MPH) |
 
 **Cruise screen (5):**
-- You can only select it while cruise is enabled (0x661 `Cruise_Enable` = Cruise Control). Otherwise screen cycling skips it.
+- You can only select it while cruise is enabled (0x661 `Cruise_Enable` = 1, Cruise Control, or 2, Speed Limit). Otherwise screen cycling skips it.
 - The gauge switches to it automatically when a set speed first appears (`Cruise_Speed_Display` goes from 0 to non-zero). You can still navigate away while cruise stays set.
 - If cruise is disabled, or 0x661 stops arriving, while it is shown, the gauge returns to the last regular screen.
 - It is never saved as the boot screen.
