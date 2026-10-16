@@ -19,7 +19,6 @@ void init_styles(void);
 void update_screen_labels(uint8_t mode, const char *left_title, const char *right_title);
 lv_obj_t* get_left_value_label(void);
 lv_obj_t* get_right_value_label(void);
-lv_obj_t* get_left_title_label(void);
 lv_obj_t* get_odometer_label(void);
 lv_obj_t* get_trip_label(void);
 lv_obj_t* get_trip_text_label(void);

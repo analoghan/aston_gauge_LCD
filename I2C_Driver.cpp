@@ -1,15 +1,5 @@
 #include "I2C_Driver.h"
 
-bool wait_for_expander(uint8_t addr, uint16_t timeout_ms = 500) {
-  uint32_t start = millis();
-  while (millis() - start < timeout_ms) {
-    Wire.beginTransmission(addr);
-    if (Wire.endTransmission() == 0) return true;
-    delay(10);
-  }
-  return false;
-}
-
 bool i2c_scan_address(uint8_t address) {
   Wire.beginTransmission(address);
   uint8_t error = Wire.endTransmission();

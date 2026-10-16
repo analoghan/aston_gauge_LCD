@@ -11,7 +11,7 @@ An automotive gauge display built on the ESP32-S3 with the LVGL graphics library
 - **Odometer and two trip meters**: distance integrated from vehicle speed and saved to NVS flash
 - **Color-coded values**: thresholds per value (for example, red for low oil pressure)
 - **Missing-data indication**: values show `--` when their CAN data stops arriving
-- **CAN robustness**: bus-off recovery, RX queue overflow handling, and watchdog logging
+- **CAN robustness**: driver start retries, bus-off recovery, RX queue overflow handling, and watchdog logging
 
 ## Hardware
 
@@ -60,7 +60,7 @@ Every screen also shows the odometer and the selected trip meter. The last scree
 - If cruise is disabled, or 0x661 stops arriving, while it is shown, the gauge returns to the last regular screen.
 - It is never saved as the boot screen.
 
-Boost uses the M1's `Ambient_Pressure` (0x64A) when the ECU sends a plausible value (60–110 kPa). Otherwise it falls back to a fixed 105 kPa (`AMBIENT_FALLBACK_KPA`).
+Boost is MAP minus the M1's `Ambient_Pressure` (0x64A), used whenever the ECU sends a plausible value (60–110 kPa). Until then it uses standard sea-level pressure, 101.3 kPa (`AMBIENT_FALLBACK_KPA`). This only reads correctly if the M1's MAP and ambient readings agree with the engine off. Check that in M1 Tune if boost doesn't read about 0.0 with the key on and the engine off.
 
 If a value gets no CAN update for 500 ms, it shows `--` in white. During peak recall, `--` means that signal has never been received.
 
@@ -125,7 +125,7 @@ The TWAI controller accepts all IDs. Filtering is done in software in `receive_c
 |------|------|------|
 | `loop()` (Arduino) | 1 | LVGL (~60 Hz), display updates (10 Hz), buttons, icons, warnings |
 | `RX_CAN` | 0 | Receives and decodes CAN into the shared `signals[]` array |
-| `Init_CAN` | 1 | Starts the TWAI driver 5 s after boot, then exits |
+| `Init_CAN` | 1 | Starts the TWAI driver 5 s after boot (retrying every 5 s on failure), then exits |
 | `Odometer` | 0 | Integrates distance from speed |
 | `Save_NVS` | 0 | Writes the odometer, trips, and screen to flash |
 | `Watchdog` | 0 | Logs a frozen main loop or missing CAN traffic |

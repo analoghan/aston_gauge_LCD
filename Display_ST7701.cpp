@@ -61,9 +61,6 @@ void st7701_init() {
   };
   spi_bus_add_device(SPI2_HOST, &devcfg, &SPI_handle);            
 
-  // gpio_reset_pin(LCD_CS_EX_PIN);
-  // gpio_set_direction(LCD_CS_EX_PIN, GPIO_MODE_OUTPUT);
-
   st7701_cs_en();
 
   st7701_write_command(0xff);
@@ -300,17 +297,6 @@ void st7701_init() {
   st7701_write_command(0x29);
   delay(20);
   
- /* 
-  st7701_write_command(0xff);
-  st7701_write_data(0x77);
-  st7701_write_data(0x01);
-  st7701_write_data(0x00);
-  st7701_write_data(0x00);
-  st7701_write_data(0x10);
-  st7701_write_command(0xe5);
-  st7701_write_data(0x00);
-  st7701_write_data(0x00);
-*/
   st7701_cs_dis();
 
   //  RGB

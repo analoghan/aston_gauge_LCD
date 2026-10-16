@@ -7,7 +7,6 @@
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
-#include "freertos/queue.h"
 
 // ============================================================================
 // GLOBAL VARIABLES AND CONFIGURATION
@@ -16,17 +15,16 @@
 // Preferences object for persistent storage
 Preferences preferences;
 
-// CAN Bus Configuration
-#define TAG "TWAI"
-
-bool can_initiated = false;
-unsigned long last_can_message_time = 0;
-unsigned long last_loop_time = 0;
+// CAN bus / watchdog state (written and read on different cores)
+volatile bool can_initiated = false;
+volatile unsigned long last_can_message_time = 0;
+volatile unsigned long last_loop_time = 0;
 #define CAN_TIMEOUT_MS 5000
 #define LOOP_TIMEOUT_MS 1000
+#define CAN_INIT_RETRY_MS 5000
 
 // TCA9554 P5-P8 Input Monitoring
-volatile uint8_t tca_inputs_last_state = 0xFF;  // Assume all pulled high initially
+uint8_t tca_inputs_last_state = 0xFF;  // Assume all pulled high initially
 unsigned long last_tca_check = 0;
 #define TCA_CHECK_INTERVAL_MS 50  // Check every 50ms
 
@@ -92,9 +90,9 @@ SemaphoreHandle_t display_data_mutex = NULL;
 
 #define CAN_DATA_TIMEOUT_MS 500 // Show "--" after 500ms of no updates
 
-// Barometric pressure for converting absolute MAP to boost. Updated from M1 Ambient_Pressure
-// (0x64A) when available; the fallback is the fixed offset this gauge was originally tuned with.
-#define AMBIENT_FALLBACK_KPA 105.0f
+// Barometric pressure for converting absolute MAP to boost, from M1 Ambient_Pressure (0x64A).
+// Standard sea-level pressure is used until a plausible 0x64A value arrives.
+#define AMBIENT_FALLBACK_KPA 101.3f
 volatile float ambient_press_kpa = AMBIENT_FALLBACK_KPA;
 
 // ============================================================================
@@ -190,6 +188,8 @@ volatile unsigned long max_recall_start_time = 0;
 volatile unsigned long max_recall_button_press_start = 0; // When button was first pressed
 volatile bool max_recall_button_held = false; // Is the button currently held
 volatile bool max_recall_cleared_this_press = false; // Already cleared during this hold
+volatile unsigned long last_keypad_time = 0; // Last 0x17C message, to release a "held" button if the keypad goes quiet
+#define KEYPAD_TIMEOUT_MS 500
 #define MAX_RECALL_DISPLAY_MS 2000 // Show max values for 2 seconds after release
 #define MAX_CLEAR_HOLD_MS 3000 // Hold 3 seconds to clear
 
@@ -287,14 +287,17 @@ void periodic_save_task(void *arg) {
   }
 }
 
+// Format hundredths of a mile as miles with one decimal, truncated like a real odometer
+void format_miles(char *buf, size_t len, uint32_t hundredths) {
+  snprintf(buf, len, "%lu.%lu", (unsigned long)(hundredths / 100), (unsigned long)((hundredths / 10) % 10));
+}
+
 // Update odometer/trip display labels
 void update_odometer_display() {
   static uint32_t last_displayed_odometer = 0;
-  static uint32_t last_displayed_trip1 = 0;
-  static uint32_t last_displayed_trip2 = 0;
+  static uint32_t last_displayed_trip = 0;
   static uint8_t last_displayed_trip_num = 0;
   
-  // Check if labels exist before updating
   lv_obj_t* odo_label = get_odometer_label();
   lv_obj_t* trip_label = get_trip_label();
   lv_obj_t* trip_text_label = get_trip_text_label();
@@ -303,48 +306,33 @@ void update_odometer_display() {
     Serial.println("Warning: Odometer/trip labels not ready yet");
     return;
   }
-  
-  if (odometer_miles != last_displayed_odometer || force_odometer_refresh) {
-    force_odometer_refresh = false;
-    char text[16];
-    // Display as miles with 1 decimal place (stored as hundredths)
-    float miles = odometer_miles / 100.0;
-    sprintf(text, "%.1f", miles);
+
+  // Snapshot so the compare and the displayed text use the same value
+  portENTER_CRITICAL(&odometer_mux);
+  uint32_t odo = odometer_miles;
+  uint32_t trip = (current_trip_display == 1) ? trip_miles : trip2_miles;
+  portEXIT_CRITICAL(&odometer_mux);
+
+  char text[16];
+  if (odo != last_displayed_odometer || force_odometer_refresh) {
+    format_miles(text, sizeof(text), odo);
     lv_label_set_text(odo_label, text);
-    last_displayed_odometer = odometer_miles;
+    last_displayed_odometer = odo;
   }
-  
-  // Check if trip display changed
+
   bool trip_changed = (current_trip_display != last_displayed_trip_num);
-  
-  // Update trip text label if trip number changed
   if (trip_changed) {
-    if (current_trip_display == 1) {
-      lv_label_set_text(trip_text_label, "Trip 1");
-    } else {
-      lv_label_set_text(trip_text_label, "Trip 2");
-    }
+    lv_label_set_text(trip_text_label, (current_trip_display == 1) ? "Trip 1" : "Trip 2");
     last_displayed_trip_num = current_trip_display;
   }
-  
-  // Always update trip value if trip changed, or if the value changed
-  if (current_trip_display == 1) {
-    if (trip_changed || trip_miles != last_displayed_trip1) {
-      char text[16];
-      float miles = trip_miles / 100.0;
-      sprintf(text, "%.1f", miles);
-      lv_label_set_text(trip_label, text);
-      last_displayed_trip1 = trip_miles;
-    }
-  } else {
-    if (trip_changed || trip2_miles != last_displayed_trip2) {
-      char text[16];
-      float miles = trip2_miles / 100.0;
-      sprintf(text, "%.1f", miles);
-      lv_label_set_text(trip_label, text);
-      last_displayed_trip2 = trip2_miles;
-    }
+
+  if (trip_changed || trip != last_displayed_trip || force_odometer_refresh) {
+    format_miles(text, sizeof(text), trip);
+    lv_label_set_text(trip_label, text);
+    last_displayed_trip = trip;
   }
+
+  force_odometer_refresh = false;
 }
 
 // Process trip reset flag (called from main loop for LVGL safety)
@@ -396,7 +384,6 @@ void on_main_screen_loaded() {
 void odometer_update_task(void *arg) {
   const int SAMPLES_PER_SECOND = 10; // Sample every 100ms
   uint32_t speed_samples[SAMPLES_PER_SECOND];
-  int sample_index = 0;
   float accumulated_distance = 0.0; // Track fractional miles
   
   while (1) {
@@ -434,10 +421,7 @@ void odometer_update_task(void *arg) {
       accumulated_distance -= (miles_to_add / 100.0);
       
       // Trigger display update from main loop (LVGL-safe)
-      // Only set flag if not already pending to avoid overwhelming the system
-      if (!odometer_display_pending) {
-        odometer_display_pending = true;
-      }
+      odometer_display_pending = true;
     }
   }
 }
@@ -471,8 +455,10 @@ void delayed_can_init_task(void *arg)
 {
   Serial.println("Delayed CAN init task started, waiting 5 seconds...");
   vTaskDelay(pdMS_TO_TICKS(5000));
-  Serial.println("5 seconds passed, initializing CANbus");
-  canbus_init();
+  while (!canbus_init()) {
+    Serial.printf("CAN init failed, retrying in %d ms\n", CAN_INIT_RETRY_MS);
+    vTaskDelay(pdMS_TO_TICKS(CAN_INIT_RETRY_MS));
+  }
   can_initiated = true;
   Serial.println("CANbus initialized, flag set");
   vTaskDelete(NULL);
@@ -645,6 +631,7 @@ void receive_can_task(void *arg) {
           nav_prev_last = nav_prev;
 
           // Peak recall button: byte 1, bit 6 (1 = pressed, 0 = released)
+          last_keypad_time = now_msg;
           bool button_now = (message.data[1] >> 6) & 0x01;
           
           if (button_now && !max_recall_button_held) {
@@ -820,6 +807,12 @@ void update_display_from_can_data(void) {
   if (now - last_update_time < UPDATE_INTERVAL_MS) return;
   last_update_time = now;
   
+  // Treat the peak recall button as released if the keypad stops sending while it was held
+  if (max_recall_button_held && now - last_keypad_time > KEYPAD_TIMEOUT_MS) {
+    max_recall_button_held = false;
+    max_recall_start_time = now;
+  }
+
   // Expire max recall (only when button is not held)
   if (max_recall_active && !max_recall_button_held && 
       (now - max_recall_start_time >= MAX_RECALL_DISPLAY_MS)) {
@@ -947,8 +940,8 @@ void setup(void) {
   xTaskCreatePinnedToCore(periodic_save_task, "Save_NVS", 2048, NULL, 1, &save_task_handle, 0);
   xTaskCreatePinnedToCore(odometer_update_task, "Odometer", 4096, NULL, 1, NULL, 0);
   
-  // Don't update display here - will be done after boot screen in restore task
-  
+  // Screen mode and odometer are refreshed again in on_main_screen_loaded() after the boot screen
+
   Serial.println("Setup complete");
 }
 

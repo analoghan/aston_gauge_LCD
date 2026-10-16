@@ -2,7 +2,8 @@
 #include "CANBus_Driver.h"
 #include <stdio.h>
 
-void canbus_init(void) {
+// Install and start the TWAI driver. Returns false (with the driver uninstalled) on failure.
+bool canbus_init(void) {
 
   // Configure TWAI (CAN) with larger RX queue for high traffic
     twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(CAN_TX_GPIO, CAN_RX_GPIO, TWAI_MODE_NORMAL);
@@ -14,7 +15,7 @@ void canbus_init(void) {
     twai_timing_config_t t_config = TWAI_TIMING_CONFIG_500KBITS();
 
     // Hardware filter: accept all IDs (software filtering via switch statement)
-    // Needed because we listen to both 0x0B2 and 0x600-0x6FF ranges
+    // Needed because we listen to both 0x17C (keypad) and the 0x600-0x6FF M1 range
     twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
  
     // Install and start TWAI driver
@@ -22,14 +23,15 @@ void canbus_init(void) {
         Serial.println("TWAI driver installed.");
     } else {
         Serial.println("Failed to install TWAI driver.");
-        return;
+        return false;
     }
 
     if (twai_start() == ESP_OK) {
         Serial.println("TWAI driver started. Listening for messages...");
     } else {
         Serial.println("Failed to start TWAI driver.");
-        return;
+        twai_driver_uninstall();
+        return false;
     }
 
     // Flush any messages that accumulated in the RX buffer during init
@@ -37,4 +39,5 @@ void canbus_init(void) {
     uint32_t flushed = 0;
     while (twai_receive(&dummy, 0) == ESP_OK) { flushed++; }
     Serial.printf("Flushed %lu stale CAN messages after init\n", flushed);
+    return true;
 }

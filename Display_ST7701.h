@@ -11,10 +11,6 @@
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_rgb.h"
 
-#include "driver/spi_master.h"
-#include "driver/gpio.h"
-#include "freertos/task.h"
-
 #include "LVGL_Driver.h"
 #include "I2C_Driver.h"
 
@@ -24,12 +20,10 @@
 #define LCD_MOSI_PIN          1 
 #define LCD_BACKLIGHT_PIN     6
 
-// Backlight   
-#define pwm_channel           1         // PWM Channel   
-#define frequency             20000     // PWM frequencyconst         
+// Backlight
+#define frequency             20000     // PWM frequency
 #define resolution            10        // PWM resolution ratio     MAX:13
-#define dutyfactor            500       // PWM dutyfactor      
-#define backlight_max         100      
+#define backlight_max         100       // set_backlight() input range: 0-100
 
 
 #define ESP_PANEL_LCD_WIDTH                       (960)
@@ -77,12 +71,6 @@
 #define ESP_PANEL_LCD_PIN_NUM_RGB_DATA15          (8)
 #define ESP_PANEL_LCD_PIN_NUM_RGB_DISP            (-1)
 
-#define ESP_PANEL_LCD_BK_LIGHT_ON_LEVEL           (1)
-#define ESP_PANEL_LCD_BK_LIGHT_OFF_LEVEL !ESP_PANEL_LCD_BK_LIGHT_ON_LEVEL
-
-#define EXAMPLE_ENABLE_PRINT_LCD_FPS            (0)
-
-extern uint8_t LCD_Backlight;
 extern esp_lcd_panel_handle_t panel_handle;
 void st7701_init();
 

@@ -31,7 +31,7 @@ void lvgl_flush_callback(lv_display_t *disp, const lv_area_t *area, uint8_t *col
 /* Initialize LVGL with double buffering and display flushing */
 void lvgl_init(void) {
   lv_init();
-  lv_tick_set_cb(xTaskGetTickCount);
+  lv_tick_set_cb([]() -> uint32_t { return millis(); });  // LVGL needs milliseconds, not RTOS ticks
   
   buf1 = (lv_color_t*)heap_caps_aligned_alloc(32, LVGL_BUF_BYTES, MALLOC_CAP_DMA);
   buf2 = (lv_color_t*)heap_caps_aligned_alloc(32, LVGL_BUF_BYTES, MALLOC_CAP_DMA);

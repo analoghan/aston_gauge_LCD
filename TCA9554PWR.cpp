@@ -25,9 +25,8 @@ uint8_t i2c_write_exio(uint8_t REG,uint8_t Data)              // Write Data to t
 
   if (result != 0) {    
     printf("I2C transmission fails. - I2C Write EXIO\r\n");
-    return -1;
+    return 1;
   }
-  printf("I2C transmission successful\r\n");
   return 0;                                             
 }
 /********************************************************** Set EXIO mode **********************************************************/       
@@ -39,7 +38,6 @@ void mode_exio(uint8_t Pin,uint8_t State)                 // Set the mode of the
   if (result != 0) { 
     printf("I/O Configuration Failure !!!\r\n");
   }
-  printf("I/O Configuration successful\r\n");
 }
 void mode_exios(uint8_t PinState)                         // Set the mode of the 7 pins from the TCA9554PWR with PinState   
 {
@@ -47,7 +45,6 @@ void mode_exios(uint8_t PinState)                         // Set the mode of the
   if (result != 0) {   
     printf("I/O Configuration Failure !!!\r\n");
   }
-  printf("I/Os Configuration successful\r\n");
 }
 /********************************************************** Read EXIO status **********************************************************/       
 uint8_t read_exio(uint8_t Pin)                            // Read the level of the TCA9554PWR Pin
@@ -76,7 +73,6 @@ void set_exio(uint8_t Pin,uint8_t State)                  // Sets the level stat
     if (result != 0) {                         
       printf("Failed to set GPIO!!!\r\n");
     }
-    printf("Set the GPIO\r\n");
   }
   else                                           
     printf("Parameter error, please enter the correct parameter!\r\n");

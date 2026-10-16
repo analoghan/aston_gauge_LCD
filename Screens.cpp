@@ -8,15 +8,6 @@
 #include "images/PeakRecall.h"
 #include "images/ClearPeakRecall.h"
 
-LV_IMG_DECLARE(AstonLogo);
-LV_IMG_DECLARE(CruiseControl);
-LV_IMG_DECLARE(tcs);
-LV_IMG_DECLARE(flag);
-LV_IMG_DECLARE(ExhaustBypass);
-LV_IMG_DECLARE(TwoStep);
-LV_IMG_DECLARE(PeakRecall);
-LV_IMG_DECLARE(ClearPeakRecall);
-
 // Single main screen
 lv_obj_t *main_scr = NULL;
 lv_obj_t *boot_scr1 = NULL;
@@ -38,7 +29,6 @@ lv_obj_t *launch_img = NULL;
 lv_obj_t *exhaust_bypass_img = NULL;
 lv_obj_t *two_step_img = NULL;
 lv_obj_t *peak_recall_img = NULL;
-lv_obj_t *clear_peak_recall_img = NULL;
 
 // ECU Warning labels (one per gauge half)
 lv_obj_t *warning_label_left = NULL;
@@ -272,10 +262,6 @@ lv_obj_t* get_left_value_label(void) {
 
 lv_obj_t* get_right_value_label(void) {
   return right_label_value;
-}
-
-lv_obj_t* get_left_title_label(void) {
-  return left_title_label;
 }
 
 lv_obj_t* get_odometer_label(void) {

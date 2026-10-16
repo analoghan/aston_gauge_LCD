@@ -6,4 +6,4 @@
 
 #define CANBUS_SPEED    500000   // 500kbps
 
-void canbus_init();
+bool canbus_init();  // Returns true once the driver is installed and started
