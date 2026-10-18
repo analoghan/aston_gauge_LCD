@@ -932,9 +932,9 @@ void setup(void) {
   Serial.printf("Reset reason: %d\n", reason);
 
   xTaskCreatePinnedToCore(receive_can_task, "RX_CAN", 4096, NULL, 1, NULL, 0);  // Core 0, priority 1
-  xTaskCreatePinnedToCore(delayed_can_init_task, "Init_CAN", 2048, NULL, 1, NULL, 1);  
-  xTaskCreatePinnedToCore(watchdog_task, "Watchdog", 2048, NULL, 1, NULL, 0);
-  xTaskCreatePinnedToCore(periodic_save_task, "Save_NVS", 2048, NULL, 1, &save_task_handle, 0);
+  xTaskCreatePinnedToCore(delayed_can_init_task, "Init_CAN", 4096, NULL, 1, NULL, 1);  
+  xTaskCreatePinnedToCore(watchdog_task, "Watchdog", 4096, NULL, 1, NULL, 0);
+  xTaskCreatePinnedToCore(periodic_save_task, "Save_NVS", 4096, NULL, 1, &save_task_handle, 0);
   xTaskCreatePinnedToCore(odometer_update_task, "Odometer", 4096, NULL, 1, NULL, 0);
   
   // Screen mode and odometer are refreshed again in on_main_screen_loaded() after the boot screen
@@ -1052,6 +1052,27 @@ void update_status_icons() {
   set_icon_visible(peak_recall_icon, show_peak_recall, peak_recall_shown);
 }
 
+// Diagnostics: print LVGL pool and internal heap usage every MEM_REPORT_MS (0 = off).
+// Runs in the main loop because LVGL is not thread-safe.
+#define MEM_REPORT_MS 3000
+
+void report_memory() {
+#if MEM_REPORT_MS > 0
+  static unsigned long last_report = 0;
+  unsigned long now = millis();
+  if (now - last_report < MEM_REPORT_MS) return;
+  last_report = now;
+
+  lv_mem_monitor_t mon;
+  lv_mem_monitor(&mon);
+  Serial.printf("MEM: LVGL used %u%% frag %u%% biggest free %u | internal free %u min %u largest %u\n",
+                (unsigned)mon.used_pct, (unsigned)mon.frag_pct, (unsigned)mon.free_biggest_size,
+                (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+                (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+#endif
+}
+
 void loop(void) {
   static unsigned long last_lvgl_time = 0;
   const unsigned long LVGL_INTERVAL_MS = 16; // Run LVGL at ~60Hz
@@ -1133,7 +1154,9 @@ void loop(void) {
   
   // Update data values
   update_display_from_can_data();
-  
+
+  report_memory();
+
   // Small delay to prevent CPU hogging, but don't block LVGL timing
   vTaskDelay(pdMS_TO_TICKS(1));
 }
