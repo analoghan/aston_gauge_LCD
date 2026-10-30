@@ -77,8 +77,9 @@ void init_styles(void) {
 
 void boot_scr1_loaded_cb(lv_event_t *e)
 {
-  /* load default screen after 4000ms */
-  lv_screen_load_anim(main_scr, LV_SCR_LOAD_ANIM_NONE, 0, 4000, false);
+  /* load default screen after 4000ms, then delete the boot screen to free its LVGL memory */
+  lv_screen_load_anim(main_scr, LV_SCR_LOAD_ANIM_NONE, 0, 4000, true);
+  boot_scr1 = NULL;  // Deleted by LVGL once main_scr loads; not used after this
 }
 
 // Callback when main screen is loaded (after boot screen)

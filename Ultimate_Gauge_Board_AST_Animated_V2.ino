@@ -24,6 +24,7 @@ volatile unsigned long last_loop_time = 0;
 #define CAN_INIT_RETRY_MS 5000
 
 // TCA9554 P5-P8 Input Monitoring
+bool tca_present = false; // Expander answered at boot; skip all access if not
 uint8_t tca_inputs_last_state = 0xFF;  // Assume all pulled high initially
 unsigned long last_tca_check = 0;
 #define TCA_CHECK_INTERVAL_MS 50  // Check every 50ms
@@ -430,16 +431,15 @@ void drivers_init(void) {
   i2c_init();
 
   Serial.println("Scanning for TCA9554...");
-  bool found = false;
   for (int attempt = 0; attempt < 10; attempt++) {
-    if (i2c_scan_address(0x20)) {
-      found = true;
+    if (i2c_scan_address(TCA9554_ADDRESS)) {
+      tca_present = true;
       break;
     }
     delay(50);
   }
 
-  if (!found) {
+  if (!tca_present) {
     Serial.println("TCA9554 not detected! Skipping expander init.");
   } else {
     // Initialize TCA9554 with P5-P8 as inputs (bits 4-7 = 1), others as output (0)
@@ -464,10 +464,11 @@ void delayed_can_init_task(void *arg)
   vTaskDelete(NULL);
 }
 
-void watchdog_task(void *arg) {
+// Logs warnings only. The reset on a hung loop comes from the ESP task watchdog (enableLoopWDT in setup).
+void health_monitor_task(void *arg) {
   vTaskDelay(pdMS_TO_TICKS(10000));
-  
-  Serial.println("Watchdog task started");
+
+  Serial.println("Health monitor task started");
   
   while (1) {
     unsigned long now = millis();
@@ -544,13 +545,11 @@ void receive_can_task(void *arg) {
     }
 
     if (alerts & TWAI_ALERT_RX_QUEUE_FULL) {
+      // Frames were dropped by the driver; the queued ones are still good, so keep reading
       overflow_count++;
-      twai_message_t dummy;
-      while (twai_receive(&dummy, 0) == ESP_OK) {}
-      vTaskDelay(pdMS_TO_TICKS(10));
-      continue;
     }
 
+    // Blocks up to 10ms when the queue is empty, which also yields to other core 0 tasks
     twai_message_t message;
     esp_err_t err = twai_receive(&message, pdMS_TO_TICKS(10));
     
@@ -723,19 +722,13 @@ void receive_can_task(void *arg) {
         portEXIT_CRITICAL(&speed_mutex);
       }
 
-      if (msg_count % 10 == 0) {
-        vTaskDelay(pdMS_TO_TICKS(1));
-      }
-      
       if (millis() - last_stats_time > 10000) {
         Serial.printf("CAN: %lu msgs, %lu overflows, %lu bus errors\n", msg_count, overflow_count, bus_error_count);
         last_stats_time = millis();
         msg_count = 0;
       }
-      
-    } else if (err == ESP_ERR_TIMEOUT) {
-      vTaskDelay(pdMS_TO_TICKS(5));
-    } else {
+
+    } else if (err != ESP_ERR_TIMEOUT) {
       Serial.printf("CAN RX error: %s\n", esp_err_to_name(err));
       vTaskDelay(pdMS_TO_TICKS(10));
     }
@@ -803,20 +796,7 @@ void update_display_from_can_data(void) {
   unsigned long now = millis();
   if (now - last_update_time < UPDATE_INTERVAL_MS) return;
   last_update_time = now;
-  
-  // Treat the peak recall button as released if the keypad stops sending while it was held
-  if (max_recall_button_held && now - last_keypad_time > KEYPAD_TIMEOUT_MS) {
-    max_recall_button_held = false;
-    max_recall_start_time = now;
-  }
 
-  // Expire max recall (only when button is not held)
-  if (max_recall_active && !max_recall_button_held && 
-      (now - max_recall_start_time >= MAX_RECALL_DISPLAY_MS)) {
-    max_recall_active = false;
-    max_clear_active = false;
-  }
-  
   update_cruise_screen(); // May change screen, so run before reading the mode
 
   uint8_t mode = get_current_screen_mode();
@@ -838,6 +818,22 @@ void update_display_from_can_data(void) {
   // --- Snapshot signals under mutex, no nested locks ---
   xSemaphoreTake(display_data_mutex, portMAX_DELAY);
 
+  // Peak recall state is shared with the CAN task's 0x17C handler, so it's only changed under the mutex.
+  // Treat the peak recall button as released if the keypad stops sending while it was held
+  if (max_recall_button_held && now - last_keypad_time > KEYPAD_TIMEOUT_MS) {
+    max_recall_button_held = false;
+    max_recall_start_time = now;
+  }
+
+  // Expire max recall (only when button is not held)
+  bool recall_ended = false;
+  if (max_recall_active && !max_recall_button_held &&
+      (now - max_recall_start_time >= MAX_RECALL_DISPLAY_MS)) {
+    max_recall_active = false;
+    max_clear_active = false;
+    recall_ended = true; // Redraw live values even if a signal has no new data
+  }
+
   // Mark any signal that has gone quiet as missing
   for (int i = 0; i < SIG_COUNT; i++) {
     SignalState &sig = signals[i];
@@ -855,7 +851,7 @@ void update_display_from_can_data(void) {
 
   SignalState &left_sig = signals[screen.left.signal];
   SignalState &right_sig = signals[screen.right.signal];
-  if (left_sig.updated || right_sig.updated || max_recall_active || mode_changed) {
+  if (left_sig.updated || right_sig.updated || max_recall_active || recall_ended || mode_changed) {
     left_raw  = max_recall_active ? left_sig.max  : left_sig.raw;
     right_raw = max_recall_active ? right_sig.max : right_sig.raw;
     // Peak recall shows "--" only for a signal never received; live view for any stale signal
@@ -926,18 +922,22 @@ void setup(void) {
   delay(50); // Small delay to ensure LVGL is ready
   update_odometer_display();
   
-  set_exio(EXIO_PIN4, Low);
-  
+  if (tca_present) set_exio(EXIO_PIN4, Low);
+
   esp_reset_reason_t reason = esp_reset_reason();
   Serial.printf("Reset reason: %d\n", reason);
 
   xTaskCreatePinnedToCore(receive_can_task, "RX_CAN", 4096, NULL, 1, NULL, 0);  // Core 0, priority 1
   xTaskCreatePinnedToCore(delayed_can_init_task, "Init_CAN", 4096, NULL, 1, NULL, 1);  
-  xTaskCreatePinnedToCore(watchdog_task, "Watchdog", 4096, NULL, 1, NULL, 0);
+  xTaskCreatePinnedToCore(health_monitor_task, "Monitor", 4096, NULL, 1, NULL, 0);
   xTaskCreatePinnedToCore(periodic_save_task, "Save_NVS", 4096, NULL, 1, &save_task_handle, 0);
   xTaskCreatePinnedToCore(odometer_update_task, "Odometer", 4096, NULL, 1, NULL, 0);
   
   // Screen mode and odometer are refreshed again in on_main_screen_loaded() after the boot screen
+
+  // Reset the board if loop() stops running for 5s (core's task watchdog timeout, panic enabled).
+  // The Arduino core feeds it before every loop() call.
+  enableLoopWDT();
 
   Serial.println("Setup complete");
 }
@@ -1104,7 +1104,7 @@ void loop(void) {
   
   // Check TCA9554 P5-P8 input states periodically
   uint8_t current_state;
-  bool tca_poll_due = (now - last_tca_check >= TCA_CHECK_INTERVAL_MS);
+  bool tca_poll_due = tca_present && (now - last_tca_check >= TCA_CHECK_INTERVAL_MS);
   if (tca_poll_due) last_tca_check = now;
   // Skip the edge check entirely if the I2C read fails, so a bad read can't fake a button press
   if (tca_poll_due && i2c_read(TCA9554_ADDRESS, TCA9554_INPUT_REG, &current_state, 1)) {
