@@ -33,7 +33,8 @@ uint8_t i2c_write_exio(uint8_t REG,uint8_t Data)              // Write Data to t
 void mode_exio(uint8_t Pin,uint8_t State)                 // Set the mode of the TCA9554PWR Pin. The default is Output mode (output mode or input mode). State: 0= Output mode 1= input mode   
 {
   uint8_t bitsStatus = i2c_read_exio(TCA9554_CONFIG_REG);      
-  uint8_t Data = (0x01 << (Pin-1)) | bitsStatus;   
+  uint8_t mask = 0x01 << (Pin-1);
+  uint8_t Data = State ? (bitsStatus | mask) : (bitsStatus & ~mask);
   uint8_t result = i2c_write_exio(TCA9554_CONFIG_REG,Data); 
   if (result != 0) { 
     printf("I/O Configuration Failure !!!\r\n");
@@ -53,7 +54,7 @@ uint8_t read_exio(uint8_t Pin)                            // Read the level of t
   uint8_t bitStatus = (inputBits >> (Pin-1)) & 0x01; 
   return bitStatus;                                  
 }
-uint8_t read_exios(uint8_t REG = TCA9554_INPUT_REG)       // Read the level of all pins of TCA9554PWR, the default read input level state, want to get the current IO output state, pass the parameter TCA9554_OUTPUT_REG, such as read_exios(TCA9554_OUTPUT_REG);
+uint8_t read_exios(uint8_t REG)       // Read the level of all pins of TCA9554PWR, the default read input level state, want to get the current IO output state, pass the parameter TCA9554_OUTPUT_REG, such as read_exios(TCA9554_OUTPUT_REG);
 {
   uint8_t inputBits = i2c_read_exio(REG);                     
   return inputBits;     
@@ -62,14 +63,11 @@ uint8_t read_exios(uint8_t REG = TCA9554_INPUT_REG)       // Read the level of a
 /********************************************************** Set the EXIO output status **********************************************************/  
 void set_exio(uint8_t Pin,uint8_t State)                  // Sets the level state of the Pin without affecting the other pins
 {
-  uint8_t Data;
   if(State < 2 && Pin < 8 && Pin > 0){  
-  uint8_t bitsStatus = read_exios(TCA9554_OUTPUT_REG);
-    if(State == 1)                                     
-      Data = (0x01 << (Pin-1)) | bitsStatus; 
-    else if(State == 0)                  
-      Data = (~(0x01 << (Pin-1))) & bitsStatus;      
-  uint8_t result = i2c_write_exio(TCA9554_OUTPUT_REG,Data);  
+    uint8_t bitsStatus = read_exios(TCA9554_OUTPUT_REG);
+    uint8_t mask = 0x01 << (Pin-1);
+    uint8_t Data = State ? (bitsStatus | mask) : (bitsStatus & ~mask);
+    uint8_t result = i2c_write_exio(TCA9554_OUTPUT_REG,Data);  
     if (result != 0) {                         
       printf("Failed to set GPIO!!!\r\n");
     }

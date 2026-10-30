@@ -103,6 +103,8 @@ volatile float ambient_press_kpa = AMBIENT_FALLBACK_KPA;
 #define COLOR_RED   lv_color_hex(0xFF0000)
 #define COLOR_GREEN lv_color_hex(0x00FF00)
 #define COLOR_BLUE  lv_color_hex(0x0000FF)
+#define COLOR_BLACK lv_color_hex(0x000000)
+#define COLOR_WARNING_BG lv_color_hex(0x500000) // Dark red background while an ECU warning is active
 
 // One half of the display: what it shows and how
 typedef struct {
@@ -136,7 +138,7 @@ static lv_color_t (*const afr_color)(float) = [](float v) {
 static const ScreenDef SCREENS[] = {
   { // 0: Coolant temp / oil pressure
     { "ECT °F",      SIG_COOLANT_TEMP, [](float r) { return (r - 40) * 9.0f / 5.0f + 32.0f; }, 0,
-      [](float v) { return (v > 0 && v < 100) ? COLOR_BLUE : (v >= 210) ? COLOR_RED : COLOR_WHITE; } },
+      [](float v) { return (v < 100) ? COLOR_BLUE : (v >= 210) ? COLOR_RED : COLOR_WHITE; } },
     { "Oil PSI",     SIG_OIL_PRESS,    [](float r) { return r * 0.1f / 6.895f; }, 0,
       [](float v) { return (v > 0 && v < 20) ? COLOR_RED : COLOR_WHITE; } },
   },
@@ -207,6 +209,7 @@ volatile uint32_t trip2_miles = 0;
 portMUX_TYPE odometer_mux = portMUX_INITIALIZER_UNLOCKED;
 TaskHandle_t save_task_handle = NULL; // Notify this task to request an immediate NVS save
 uint8_t last_screen_mode = 0;
+volatile uint8_t current_screen_mode = 0; // Index into SCREENS currently shown (read by the CAN task)
 uint8_t current_trip_display = 1; // 1 or 2, always starts at 1
 
 // ============================================================================
@@ -216,8 +219,6 @@ uint8_t current_trip_display = 1; // 1 or 2, always starts at 1
 // Odometer tracking variables
 volatile uint16_t current_speed_x10 = 0; // Current speed in tenths of MPH (keeps fraction for odometer accuracy)
 portMUX_TYPE speed_mutex = portMUX_INITIALIZER_UNLOCKED;
-volatile bool trip_reset_pending = false; // Flag to trigger trip reset from main loop
-volatile bool trip_switch_pending = false; // Flag to trigger trip display switch from main loop
 volatile bool odometer_display_pending = false; // Flag to trigger odometer display update
 volatile bool force_odometer_refresh = false;   // Force cache bypass on next odometer update
 
@@ -298,15 +299,6 @@ void update_odometer_display() {
   static uint32_t last_displayed_odometer = 0;
   static uint32_t last_displayed_trip = 0;
   static uint8_t last_displayed_trip_num = 0;
-  
-  lv_obj_t* odo_label = get_odometer_label();
-  lv_obj_t* trip_label = get_trip_label();
-  lv_obj_t* trip_text_label = get_trip_text_label();
-  
-  if (odo_label == NULL || trip_label == NULL || trip_text_label == NULL) {
-    Serial.println("Warning: Odometer/trip labels not ready yet");
-    return;
-  }
 
   // Snapshot so the compare and the displayed text use the same value
   portENTER_CRITICAL(&odometer_mux);
@@ -317,56 +309,46 @@ void update_odometer_display() {
   char text[16];
   if (odo != last_displayed_odometer || force_odometer_refresh) {
     format_miles(text, sizeof(text), odo);
-    lv_label_set_text(odo_label, text);
+    lv_label_set_text(odometer_value, text);
     last_displayed_odometer = odo;
   }
 
   bool trip_changed = (current_trip_display != last_displayed_trip_num);
   if (trip_changed) {
-    lv_label_set_text(trip_text_label, (current_trip_display == 1) ? "Trip 1" : "Trip 2");
+    lv_label_set_text_static(trip_label, (current_trip_display == 1) ? "Trip 1" : "Trip 2");
     last_displayed_trip_num = current_trip_display;
   }
 
   if (trip_changed || trip != last_displayed_trip || force_odometer_refresh) {
     format_miles(text, sizeof(text), trip);
-    lv_label_set_text(trip_label, text);
+    lv_label_set_text(trip_value, text);
     last_displayed_trip = trip;
   }
 
   force_odometer_refresh = false;
 }
 
-// Process trip reset flag (called from main loop for LVGL safety)
-void process_trip_reset() {
-  if (trip_reset_pending) {
-    trip_reset_pending = false;
-    
-    // Reset only the currently displayed trip
-    portENTER_CRITICAL(&odometer_mux);
-    if (current_trip_display == 1) {
-      trip_miles = 0;
-    } else {
-      trip2_miles = 0;
-    }
-    portEXIT_CRITICAL(&odometer_mux);
-    Serial.printf("Trip %d meter reset\n", current_trip_display);
-
-    update_odometer_display();
-    request_save(); // Save immediately
+// Reset the currently displayed trip meter (main loop only: updates LVGL)
+void reset_current_trip() {
+  portENTER_CRITICAL(&odometer_mux);
+  if (current_trip_display == 1) {
+    trip_miles = 0;
+  } else {
+    trip2_miles = 0;
   }
+  portEXIT_CRITICAL(&odometer_mux);
+  Serial.printf("Trip %d meter reset\n", current_trip_display);
+
+  update_odometer_display();
+  request_save(); // Save immediately
 }
 
-// Process trip switch flag (called from main loop for LVGL safety)
-void process_trip_switch() {
-  if (trip_switch_pending) {
-    trip_switch_pending = false;
-    
-    // Toggle between trip 1 and trip 2
-    current_trip_display = (current_trip_display == 1) ? 2 : 1;
-    Serial.printf("Switched to Trip %d\n", current_trip_display);
-    
-    update_odometer_display();
-  }
+// Toggle the display between trip 1 and trip 2 (main loop only: updates LVGL)
+void switch_trip_display() {
+  current_trip_display = (current_trip_display == 1) ? 2 : 1;
+  Serial.printf("Switched to Trip %d\n", current_trip_display);
+
+  update_odometer_display();
 }
 
 // Called from Screens.cpp when the main screen finishes loading after the boot screen
@@ -555,8 +537,8 @@ void receive_can_task(void *arg) {
     
     if (err == ESP_OK) {
       msg_count++;
-      last_can_message_time = millis();
       unsigned long now_msg = millis(); // Capture time once, outside any critical section
+      last_can_message_time = now_msg;
       
       xSemaphoreTake(display_data_mutex, portMAX_DELAY);
       switch (message.identifier) {
@@ -647,7 +629,7 @@ void receive_can_task(void *arg) {
             if (!max_recall_cleared_this_press && 
                 (now_msg - max_recall_button_press_start >= MAX_CLEAR_HOLD_MS)) {
               // 3 seconds held - clear max values for current screen
-              const ScreenDef &screen = SCREENS[get_current_screen_mode()];
+              const ScreenDef &screen = SCREENS[current_screen_mode];
               signals[screen.left.signal].max = 0;
               signals[screen.right.signal].max = 0;
               max_clear_active = true;
@@ -776,7 +758,7 @@ void update_cruise_screen() {
   bool speed_set = cruise_available && set_speed.valid && set_speed.raw != 0;
   xSemaphoreGive(display_data_mutex);
 
-  uint8_t mode = get_current_screen_mode();
+  uint8_t mode = current_screen_mode;
   if (speed_set && !speed_was_set && mode != SCREEN_CRUISE) {
     Serial.println("Cruise speed set, switching to cruise screen");
     show_screen(SCREEN_CRUISE);
@@ -799,7 +781,7 @@ void update_display_from_can_data(void) {
 
   update_cruise_screen(); // May change screen, so run before reading the mode
 
-  uint8_t mode = get_current_screen_mode();
+  uint8_t mode = current_screen_mode;
   const ScreenDef &screen = SCREENS[mode];
 
   // update_screen_labels() resets the labels on a mode change, so the cache is stale
@@ -867,8 +849,8 @@ void update_display_from_can_data(void) {
 
   if (!has_update) return;
 
-  update_gauge_label(get_left_value_label(), left_cache, screen.left, screen.left.scale(left_raw), left_missing);
-  update_gauge_label(get_right_value_label(), right_cache, screen.right, screen.right.scale(right_raw), right_missing);
+  update_gauge_label(left_label_value, left_cache, screen.left, screen.left.scale(left_raw), left_missing);
+  update_gauge_label(right_label_value, right_cache, screen.right, screen.right.scale(right_raw), right_missing);
 }
 
 bool screen_available(uint8_t mode) {
@@ -879,7 +861,8 @@ bool screen_available(uint8_t mode) {
 // are remembered in last_screen_mode (saved to NVS), so it is also the screen to return to.
 void show_screen(uint8_t mode) {
   if (!screen_available(mode)) mode = 0; // Guard against a bad or unavailable saved value
-  update_screen_labels(mode, SCREENS[mode].left.title, SCREENS[mode].right.title);
+  current_screen_mode = mode;
+  update_screen_labels(SCREENS[mode].left.title, SCREENS[mode].right.title);
   if (SCREENS[mode].available == NULL) {
     last_screen_mode = mode;
   }
@@ -888,7 +871,7 @@ void show_screen(uint8_t mode) {
 // Step forward (+1) or back (-1) through the screens, wrapping around and
 // skipping screens that aren't currently available
 void change_screen(int delta) {
-  uint8_t new_mode = get_current_screen_mode();
+  uint8_t new_mode = current_screen_mode;
   for (uint8_t i = 0; i < NUM_SCREENS; i++) {
     new_mode = (new_mode + NUM_SCREENS + delta) % NUM_SCREENS;
     if (screen_available(new_mode)) break;
@@ -917,10 +900,6 @@ void setup(void) {
   
   screens_init();
   Serial.println("5: Screens init");
-  
-  // Update odometer/trip display with loaded values before boot screen shows
-  delay(50); // Small delay to ensure LVGL is ready
-  update_odometer_display();
   
   if (tca_present) set_exio(EXIO_PIN4, Low);
 
@@ -955,15 +934,6 @@ void update_ecu_warnings() {
     flags = 0;
   }
   
-  lv_obj_t* warn_left = get_warning_label_left();
-  lv_obj_t* warn_right = get_warning_label_right();
-  lv_obj_t* screen = get_main_screen();
-  lv_obj_t* left_container = get_left_gauge_container();
-  lv_obj_t* right_container = get_right_gauge_container();
-  
-  if (warn_left == NULL || warn_right == NULL || screen == NULL ||
-      left_container == NULL || right_container == NULL) return;
-  
   bool warning_active = (flags != 0);
   
   // Only update if state changed
@@ -971,9 +941,9 @@ void update_ecu_warnings() {
   
   if (warning_active) {
     // Set background red on screen and both gauge containers
-    lv_obj_set_style_bg_color(screen, lv_color_make(80, 0, 0), 0);
-    lv_obj_set_style_bg_color(left_container, lv_color_make(80, 0, 0), LV_PART_MAIN);
-    lv_obj_set_style_bg_color(right_container, lv_color_make(80, 0, 0), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(main_scr, COLOR_WARNING_BG, 0);
+    lv_obj_set_style_bg_color(left_gauge_container, COLOR_WARNING_BG, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(right_gauge_container, COLOR_WARNING_BG, LV_PART_MAIN);
     
     // Build warning message — show highest priority warning
     const char* warn_text = "";
@@ -987,17 +957,17 @@ void update_ecu_warnings() {
     else if (flags & WARN_ENGINE_SPEED)     warn_text = "Engine RPM High";
     
     // Show same message on both gauges
-    lv_label_set_text(warn_left, warn_text);
-    lv_label_set_text(warn_right, warn_text);
-    lv_obj_clear_flag(warn_left, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(warn_right, LV_OBJ_FLAG_HIDDEN);
+    lv_label_set_text_static(warning_label_left, warn_text);
+    lv_label_set_text_static(warning_label_right, warn_text);
+    lv_obj_clear_flag(warning_label_left, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(warning_label_right, LV_OBJ_FLAG_HIDDEN);
   } else {
     // Clear: restore black background and hide labels
-    lv_obj_set_style_bg_color(screen, lv_color_make(0, 0, 0), 0);
-    lv_obj_set_style_bg_color(left_container, lv_color_make(0, 0, 0), LV_PART_MAIN);
-    lv_obj_set_style_bg_color(right_container, lv_color_make(0, 0, 0), LV_PART_MAIN);
-    lv_obj_add_flag(warn_left, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(warn_right, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_bg_color(main_scr, COLOR_BLACK, 0);
+    lv_obj_set_style_bg_color(left_gauge_container, COLOR_BLACK, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(right_gauge_container, COLOR_BLACK, LV_PART_MAIN);
+    lv_obj_add_flag(warning_label_left, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(warning_label_right, LV_OBJ_FLAG_HIDDEN);
   }
   
   last_flags = flags;
@@ -1026,30 +996,29 @@ void update_status_icons() {
   static int8_t two_step_shown = -1, exhaust_bypass_shown = -1, peak_recall_shown = -1;
   static const lv_image_dsc_t *peak_recall_src = NULL;
 
-  lv_obj_t* peak_recall_icon = get_peak_recall_icon();
-  if (main_screen_loaded_time == 0 || peak_recall_icon == NULL) {
+  if (main_screen_loaded_time == 0) {
     return; // Main screen not up yet
   }
 
   unsigned long now = millis();
   bool startup = (now - main_screen_loaded_time < ICON_STARTUP_SHOW_MS);
 
-  set_icon_visible(get_cruise_icon(),         startup || cruise_available,                             cruise_shown); // 0x661 Cruise_Enable
-  set_icon_visible(get_tcs_icon(),            startup || status_recent(last_tcs_time, now),            tcs_shown);
-  set_icon_visible(get_launch_icon(),         startup || status_recent(last_launch_time, now),         launch_shown);
-  set_icon_visible(get_two_step_icon(),       startup || status_recent(last_two_step_time, now),       two_step_shown);
-  set_icon_visible(get_exhaust_bypass_icon(), startup || status_recent(last_exhaust_bypass_time, now), exhaust_bypass_shown);
+  set_icon_visible(cruise_control_img,        startup || cruise_available,                             cruise_shown); // 0x661 Cruise_Enable
+  set_icon_visible(tcs_img,                   startup || status_recent(last_tcs_time, now),            tcs_shown);
+  set_icon_visible(launch_img,                startup || status_recent(last_launch_time, now),         launch_shown);
+  set_icon_visible(two_step_img,              startup || status_recent(last_two_step_time, now),       two_step_shown);
+  set_icon_visible(exhaust_bypass_img,        startup || status_recent(last_exhaust_bypass_time, now), exhaust_bypass_shown);
 
   // Peak recall icon swaps image between recall and clear modes
   bool show_peak_recall = startup || max_recall_active;
   if (show_peak_recall) {
     const lv_image_dsc_t *src = max_clear_active ? &ClearPeakRecall : &PeakRecall;
     if (src != peak_recall_src) {
-      lv_image_set_src(peak_recall_icon, src);
+      lv_image_set_src(peak_recall_img, src);
       peak_recall_src = src;
     }
   }
-  set_icon_visible(peak_recall_icon, show_peak_recall, peak_recall_shown);
+  set_icon_visible(peak_recall_img, show_peak_recall, peak_recall_shown);
 }
 
 // Diagnostics: print LVGL pool and internal heap usage every MEM_REPORT_MS (0 = off).
@@ -1096,12 +1065,6 @@ void loop(void) {
     update_odometer_display();
   }
   
-  // Check if trip reset was requested
-  process_trip_reset();
-  
-  // Check if trip switch was requested
-  process_trip_switch();
-  
   // Check TCA9554 P5-P8 input states periodically
   uint8_t current_state;
   bool tca_poll_due = tca_present && (now - last_tca_check >= TCA_CHECK_INTERVAL_MS);
@@ -1126,13 +1089,11 @@ void loop(void) {
         }
         // P6 triggers trip reset
         else if (pin == 6) {
-          trip_reset_pending = true;
-          Serial.println("Trip reset triggered");
+          reset_current_trip();
         }
         // P7 triggers trip switch
         else if (pin == 7) {
-          trip_switch_pending = true;
-          Serial.println("Trip switch triggered");
+          switch_trip_display();
         }
       }
     }

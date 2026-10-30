@@ -8,19 +8,21 @@
 #include "images/PeakRecall.h"
 #include "images/ClearPeakRecall.h"
 
-// Single main screen
+// Screens
 lv_obj_t *main_scr = NULL;
 lv_obj_t *boot_scr1 = NULL;
 
-// Label objects
-lv_obj_t *left_title_label = NULL;
-lv_obj_t *right_title_label = NULL;
+// Labels updated by the main sketch
 lv_obj_t *left_label_value = NULL;
 lv_obj_t *right_label_value = NULL;
-lv_obj_t *odometer_label = NULL;
 lv_obj_t *odometer_value = NULL;
 lv_obj_t *trip_label = NULL;
 lv_obj_t *trip_value = NULL;
+
+// Labels only set here
+static lv_obj_t *left_title_label = NULL;
+static lv_obj_t *right_title_label = NULL;
+static lv_obj_t *odometer_label = NULL;
 
 // Status icons
 lv_obj_t *cruise_control_img = NULL;
@@ -43,9 +45,6 @@ static lv_style_t style_label_title;
 static lv_style_t style_label_value;
 static lv_style_t style_label_warning;
 static bool styles_initialized = false;
-
-// Current screen mode
-static uint8_t current_screen_mode = 0; // Index into SCREENS in the main sketch
 
 void init_styles(void) {
   if (styles_initialized) return;
@@ -240,12 +239,10 @@ void main_scr_init(void) {
   lv_obj_add_event_cb(main_scr, main_scr_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 }
 
-// Update screen mode titles and reset values (titles come from the SCREENS table in the sketch)
-void update_screen_labels(uint8_t mode, const char *left_title, const char *right_title) {
-  current_screen_mode = mode;
-  
-  lv_label_set_text(left_title_label, left_title);
-  lv_label_set_text(right_title_label, right_title);
+// Set the gauge titles (from the SCREENS table in the sketch) and reset values for a new screen
+void update_screen_labels(const char *left_title, const char *right_title) {
+  lv_label_set_text_static(left_title_label, left_title);
+  lv_label_set_text_static(right_title_label, right_title);
   
   // Reset value labels to 0 when changing modes
   lv_label_set_text(left_label_value, "   0");
@@ -254,75 +251,6 @@ void update_screen_labels(uint8_t mode, const char *left_title, const char *righ
   // Reset colors to white
   lv_obj_set_style_text_color(left_label_value, lv_color_make(255, 255, 255), LV_PART_MAIN);
   lv_obj_set_style_text_color(right_label_value, lv_color_make(255, 255, 255), LV_PART_MAIN);
-}
-
-// Get pointers to value labels for updating
-lv_obj_t* get_left_value_label(void) {
-  return left_label_value;
-}
-
-lv_obj_t* get_right_value_label(void) {
-  return right_label_value;
-}
-
-lv_obj_t* get_odometer_label(void) {
-  return odometer_value;
-}
-
-lv_obj_t* get_trip_label(void) {
-  return trip_value;
-}
-
-lv_obj_t* get_trip_text_label(void) {
-  return trip_label;
-}
-
-lv_obj_t* get_cruise_icon(void) {
-  return cruise_control_img;
-}
-
-lv_obj_t* get_tcs_icon(void) {
-  return tcs_img;
-}
-
-lv_obj_t* get_launch_icon(void) {
-  return launch_img;
-}
-
-lv_obj_t* get_two_step_icon(void) {
-  return two_step_img;
-}
-
-lv_obj_t* get_exhaust_bypass_icon(void) {
-  return exhaust_bypass_img;
-}
-
-lv_obj_t* get_peak_recall_icon(void) {
-  return peak_recall_img;
-}
-
-uint8_t get_current_screen_mode(void) {
-  return current_screen_mode;
-}
-
-lv_obj_t* get_warning_label_left(void) {
-  return warning_label_left;
-}
-
-lv_obj_t* get_warning_label_right(void) {
-  return warning_label_right;
-}
-
-lv_obj_t* get_main_screen(void) {
-  return main_scr;
-}
-
-lv_obj_t* get_left_gauge_container(void) {
-  return left_gauge_container;
-}
-
-lv_obj_t* get_right_gauge_container(void) {
-  return right_gauge_container;
 }
 
 // build the screens

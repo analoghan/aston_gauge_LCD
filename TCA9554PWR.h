@@ -39,7 +39,7 @@ void mode_exio(uint8_t Pin,uint8_t State);                  // Set the mode of t
 void mode_exios(uint8_t PinState);                          // Set the mode of the 7 pins from the TCA9554PWR with PinState  
 /********************************************************** Read EXIO status **********************************************************/       
 uint8_t read_exio(uint8_t Pin);                             // Read the level of the TCA9554PWR Pin
-uint8_t read_exios(uint8_t REG);                            // Read the level of all pins of TCA9554PWR, the default read input level state, want to get the current IO output state, pass the parameter TCA9554_OUTPUT_REG, such as read_exios(TCA9554_OUTPUT_REG);
+uint8_t read_exios(uint8_t REG = TCA9554_INPUT_REG);                          // Read the level of all pins of TCA9554PWR, the default read input level state, want to get the current IO output state, pass the parameter TCA9554_OUTPUT_REG, such as read_exios(TCA9554_OUTPUT_REG);
 /********************************************************** Set the EXIO output status **********************************************************/  
 void set_exio(uint8_t Pin,uint8_t State);                   // Sets the level state of the Pin without affecting the other pins
 void set_exios(uint8_t PinState);                           // Set 7 pins to the PinState state such as :PinState=0x23, 0010 0011 state (the highest bit is not used)

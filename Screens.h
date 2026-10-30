@@ -9,31 +9,31 @@ LV_IMG_DECLARE(ClearPeakRecall);
 extern lv_obj_t *main_scr;
 extern lv_obj_t *boot_scr1;
 
+// Objects the main sketch updates (created by main_scr_init)
+extern lv_obj_t *left_label_value;
+extern lv_obj_t *right_label_value;
+extern lv_obj_t *odometer_value;
+extern lv_obj_t *trip_label;   // "Trip 1" / "Trip 2"
+extern lv_obj_t *trip_value;
+extern lv_obj_t *cruise_control_img;
+extern lv_obj_t *tcs_img;
+extern lv_obj_t *launch_img;
+extern lv_obj_t *exhaust_bypass_img;
+extern lv_obj_t *two_step_img;
+extern lv_obj_t *peak_recall_img;
+extern lv_obj_t *warning_label_left;
+extern lv_obj_t *warning_label_right;
+extern lv_obj_t *left_gauge_container;
+extern lv_obj_t *right_gauge_container;
+
 // Screen initialization functions
 void boot_scr1_init(void);
 void main_scr_init(void);
 void screens_init(void);
 void init_styles(void);
 
-// Screen mode management
-void update_screen_labels(uint8_t mode, const char *left_title, const char *right_title);
-lv_obj_t* get_left_value_label(void);
-lv_obj_t* get_right_value_label(void);
-lv_obj_t* get_odometer_label(void);
-lv_obj_t* get_trip_label(void);
-lv_obj_t* get_trip_text_label(void);
-lv_obj_t* get_cruise_icon(void);
-lv_obj_t* get_tcs_icon(void);
-lv_obj_t* get_launch_icon(void);
-lv_obj_t* get_two_step_icon(void);
-lv_obj_t* get_exhaust_bypass_icon(void);
-lv_obj_t* get_peak_recall_icon(void);
-lv_obj_t* get_warning_label_left(void);
-lv_obj_t* get_warning_label_right(void);
-lv_obj_t* get_main_screen(void);
-lv_obj_t* get_left_gauge_container(void);
-lv_obj_t* get_right_gauge_container(void);
-uint8_t get_current_screen_mode(void);
+// Set gauge titles and reset values when the screen mode changes
+void update_screen_labels(const char *left_title, const char *right_title);
 
 // Callback functions
 void on_main_screen_loaded(void);  // Implemented in the main sketch

@@ -26,7 +26,7 @@ bool i2c_read(uint8_t driver_addr, uint8_t reg_addr, uint8_t *reg_data, uint32_t
     return I2C_FAIL;
   }
 
-  for (int i = 0; i < length; i++) {
+  for (uint32_t i = 0; i < length; i++) {
     *reg_data++ = Wire.read();
   }
 
@@ -37,7 +37,7 @@ bool i2c_write(uint8_t driver_addr, uint8_t reg_addr, const uint8_t *reg_data, u
   Wire.beginTransmission(driver_addr);
   Wire.write(reg_addr);
 
-  for (int i = 0; i < length; i++) {
+  for (uint32_t i = 0; i < length; i++) {
     Wire.write(*reg_data++);
   }
 
