@@ -56,3 +56,6 @@ Temporary Items
 # Temporary files
 *.tmp
 *.temp
+
+# Local reference DBCs not kept in the repo
+M1_GPR_To_PDM_v2 (Match Master Channel List).dbc
