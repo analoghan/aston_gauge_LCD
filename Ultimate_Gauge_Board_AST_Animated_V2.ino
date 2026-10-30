@@ -758,6 +758,10 @@ void update_cruise_screen() {
   bool speed_set = cruise_available && set_speed.valid && set_speed.raw != 0;
   xSemaphoreGive(display_data_mutex);
 
+  // Don't switch screens during the boot screen: on_main_screen_loaded() would override it.
+  // speed_was_set stays unchanged, so a set speed still switches once the main screen is up.
+  if (main_screen_loaded_time == 0) return;
+
   uint8_t mode = current_screen_mode;
   if (speed_set && !speed_was_set && mode != SCREEN_CRUISE) {
     Serial.println("Cruise speed set, switching to cruise screen");
@@ -887,7 +891,13 @@ void setup(void) {
 
   // Create mutexes before starting any tasks
   display_data_mutex = xSemaphoreCreateMutex();
-  
+  if (display_data_mutex == NULL) {
+    // Only fails if the heap is exhausted at boot; nothing can run safely without it
+    Serial.println("FATAL: display_data_mutex allocation failed, restarting");
+    delay(1000);
+    ESP.restart();
+  }
+
   // Load persistent data from NVS
   load_persistent_data();
   Serial.println("2: NVS loaded");
